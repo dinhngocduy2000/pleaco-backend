@@ -1,0 +1,1 @@
+"""Pleaco FastAPI application."""
