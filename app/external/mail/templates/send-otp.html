@@ -1,0 +1,116 @@
+<html lang='en'>
+  <head>
+    <meta charset='UTF-8' />
+    <meta name='viewport' content='width=device-width, initial-scale=1.0' />
+    <title>Verification Code</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        background-color: #f5f5f5;
+        padding: 20px;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background-color: #ffffff;
+        
+        align-items: center;
+        justify-content: center;
+      }
+      .header {
+        padding: 30px 20px;
+        text-align: center;
+      }
+      .logo {
+        align-items: center;
+        justify-content: center;
+      }
+      .logo img {
+        max-height: 50px;
+        height: auto;
+      }
+      .content {
+        text-align: center;
+      }
+      .verification-box {
+        background-color: #f9f9f9;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 24px 16px;
+        margin: 20px auto;
+        max-width: 450px;
+      }
+      .verification-label {
+        font-size: 14px;
+        color: #101727;
+        margin-bottom: 15px;
+      }
+      .verification-code {
+        font-size: 20px;
+        font-weight: 700;
+        color: #0066cc;
+        letter-spacing: -2%;
+        margin: 10px 0;
+      }
+      .expiry-text {
+        font-size: 12px;
+        color: #333333;
+        margin-top: 20px;
+        margin-bottom: 5px;
+        font-weight: 500;
+      }
+      .warning-text {
+        font-size: 12px;
+        color: #101727;
+        line-height: 1.5;
+        font-weight: 500;
+      }
+      .footer {
+        padding: 20px 30px;
+        text-align: center;
+        font-size: 12px;
+        color: #111827;
+        text-decoration: underline;
+        width: 440px;
+        margin: 0 auto;
+      }
+      .footer a {
+        color: #0066cc;
+      }
+    </style>
+  </head>
+  <body>
+    <div class='container'>
+      <div class='header'>
+        <div class='logo'>
+          <img src='{{ base_url.rstrip("/") }}/public/images/logo.png' alt='Chronohub Logo' style='display:block;margin:0 auto;border:0;max-height:50px' />
+        </div>
+      </div>
+      <div class='content'>
+        <div class='verification-box'>
+          <div class='verification-label'>Your verification code:</div>
+          <div class='verification-code'>{{otp}}</div>
+          <div class='expiry-text'>This code will expire in
+            <strong>{{expiry_minutes}} minutes</strong>.</div>
+          <span class='warning-text'>Please do not share this code with anyone to keep your account
+            secure.</span>
+        </div>
+      </div>
+      <div class='footer'>
+        ©
+        {{year}}
+        Chronohub |
+        <a href='#'>Hanoi, Vietnam</a>
+        |
+        <a href='#' style="color: #111827;">Privacy Policy</a>
+        <span style="display: none">{{unique_id}}</span>  <!-- Add this -->
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ subject or "Welcome" }}</title>
+  </head>
+  <body style="font-family: system-ui, sans-serif; line-height: 1.5; color: #1a1a1a">
+    <p>Hi {{ name }},</p>
+    <p>Thanks for joining <strong>{{ app_name }}</strong>.</p>
+    {% if action_url %}
+    <p>
+      <a href="{{ action_url }}" style="color: #2563eb">Get started</a>
+    </p>
+    {% endif %}
+    <p style="color: #666; font-size: 14px">— The {{ app_name }} team</p>
+  </body>
+</html>

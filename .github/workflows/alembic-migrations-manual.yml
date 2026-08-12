@@ -1,0 +1,90 @@
+name: Alembic Migrations - Manual Only
+
+# This workflow can ONLY be triggered manually via the GitHub UI
+# (no automatic runs on push, pull_request, schedule, etc.)
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target revision (default: head)'
+        required: false
+        default: 'head'
+        type: string
+      dry-run:
+        description: 'Show SQL without applying changes? (yes/no)'
+        required: false
+        default: 'no'
+        type: choice
+        options:
+          - 'no'
+          - 'yes'
+
+# Optional: define environment if you later want to add required reviewers
+# environment: production-migrations
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    # Soft protection: only your GitHub username can actually run the migration
+    # Replace 'ngocduy-git' with your ACTUAL GitHub username (case-sensitive!)
+    # You can check your username in previous workflow runs or your profile URL
+    if: github.actor == 'dinhngocduy2000' && github.ref == 'refs/heads/main'   # ← CHANGE THIS TO YOUR REAL USERNAME
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv (fast & modern dependency manager)
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install project dependencies
+        run: |
+          uv venv --python 3.12
+          source .venv/bin/activate
+          uv pip install --upgrade pip
+          uv pip install alembic sqlalchemy[asyncio] asyncpg python-dotenv
+          uv pip install -r requirements.txt
+
+      - name: Show current migration state
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ACCESS_TOKEN_EXPIRE_SECONDS: ${{ vars.ACCESS_TOKEN_EXPIRE_SECONDS }}
+        run: |
+          source .venv/bin/activate
+          alembic current || echo "No current revision found"
+
+      - name: Alembic upgrade (dry-run or real)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ACCESS_TOKEN_EXPIRE_SECONDS: ${{ vars.ACCESS_TOKEN_EXPIRE_SECONDS }}
+        run: |
+          source .venv/bin/activate
+
+          if [ "${{ inputs.dry-run }}" = "yes" ]; then
+            echo "Running in dry-run mode (showing SQL only)"
+            alembic upgrade ${{ inputs.target }} --sql
+          else
+            echo "Applying migrations to head or specified target"
+            alembic upgrade ${{ inputs.target }}
+          fi
+
+      - name: Show final migration state
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ACCESS_TOKEN_EXPIRE_SECONDS: ${{ vars.ACCESS_TOKEN_EXPIRE_SECONDS }}
+        run: |
+          source .venv/bin/activate
+          alembic current || echo "Final state could not be determined"

@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+*.egg
+*.egg-info/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments & dependencies
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Build & distribution
+dist/
+build/
+*.egg-info/
+*.whl
+*.tar.gz
+
+# Testing
+tests/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+tox/
+.nox/
+.mypy_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Logs & temporary
+*.log
+logs/
+tmp/
+temp/
+
+# Local AWS / SAM / CDK files
+.aws/
+.aws-sam/
+samconfig.toml
+template.yaml
+template.yml
+cdk.out/
+
+# Jupyter & notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Large data / models (adjust patterns to your project)
+data/
+models/
+*.h5
+*.pth
+*.pt
+*.onnx
+*.pickle
+*.pkl
+
+# Misc
+.git
+.gitignore
+.env*
+README.md
+LICENSE
+Dockerfile*   # optional: ignore backups like Dockerfile.bak
+docker-compose*
