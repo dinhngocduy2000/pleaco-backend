@@ -10,7 +10,6 @@ from app.common.schemas.user import (
     UserJoinOption,
     UserQuery,
     UserUpdate,
-    ValidateOTPRequest,
 )
 from app.external.redis.redis import RedisClient
 from app.models.user import User
@@ -39,10 +38,19 @@ class UserRepository:
 
         return stmt
 
-    async def create_user(self, session: AsyncSession, user_info: User) -> UserInfo:
-        session.add(user_info)  # Note: session.add() is NOT async, no await needed
-        await session.flush()  # Flush to get the ID if needed
-        return user_info.view()
+    async def save_user(self, session: AsyncSession, user: User) -> User:
+        """Persist a new or modified user in the caller's transaction."""
+        session.add(user)
+        await session.flush()
+        return user
+
+    async def activate_user(
+        self, session: AsyncSession, user: User
+    ) -> User:
+        """Mark a verified user as active within the caller's transaction."""
+        user.status = UserStatus.ACTIVE
+        await session.flush()
+        return user
 
     async def get_list_users(self, session: AsyncSession) -> List[str]:
         pass
@@ -139,23 +147,19 @@ class UserRepository:
             logger.error(msg=f"Set OTP code repository: Exception: {e}", context=ctx)
             raise e
 
-    async def get_otp_code(
-        self, otp_request: ValidateOTPRequest, ctx: AppContext
-    ) -> str:
+    async def get_otp_code(self, email: str, ctx: AppContext) -> str | None:
         try:
             return await self._redis_client.get(
-                f"{settings.CACHE_OTP_CODE}:{otp_request.email}",
+                f"{settings.CACHE_OTP_CODE}:{email}",
             )
         except Exception as e:
             logger.error(msg=f"Get OTP code repository: Exception: {e}", context=ctx)
             raise e
 
-    async def delete_otp_code(
-        self, otp_request: ValidateOTPRequest, ctx: AppContext
-    ) -> None:
+    async def delete_otp_code(self, email: str, ctx: AppContext) -> None:
         try:
             await self._redis_client.delete(
-                f"{settings.CACHE_OTP_CODE}:{otp_request.email}",
+                f"{settings.CACHE_OTP_CODE}:{email}",
             )
         except Exception as e:
             logger.error(msg=f"Delete OTP code repository: Exception: {e}", context=ctx)

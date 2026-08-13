@@ -1,9 +1,5 @@
-import asyncio
-import hashlib
 import secrets
-import urllib.parse
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Tuple
 from uuid import UUID
 
 import httpx
@@ -11,7 +7,6 @@ from fastapi import Request, Response
 from app.common.context import AppContext
 from app.common.enum.user_status import UserStatus
 from app.common.middleware.logger import Logger
-from app.common.schemas.mail import SendMailRequest
 from app.common.schemas.user import (
     Credential,
     UserCreate,
@@ -25,8 +20,8 @@ from app.common.schemas.user import (
 from app.common.exceptions import BadRequestException, UnauthorizedException
 from app.common.utils.generate_otp import generate_otp
 from app.core.sso_providers.base_sso import BaseSSOStrategy
-from app.external.mail.jinja_templates import render_mail_html
 from app.external.mail.mail import MailService
+from app.external.queues.topics.user_verification import UserVerificationTopic
 from app.models.user import User
 from app.repository.registry import Registry
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,8 +33,6 @@ from google.auth.transport import requests as google_requests
 
 from app.services.user import UserService
 
-salt = bcrypt.gensalt()
-
 logger = Logger()
 
 
@@ -47,6 +40,7 @@ class AuthService:
     repo: Registry
     user_service: UserService
     mail_service: MailService
+    verification_topic: UserVerificationTopic
     sso_strategy: BaseSSOStrategy | None
 
     def __init__(
@@ -54,10 +48,12 @@ class AuthService:
         repo: Registry,
         user_service: UserService,
         mail_service: MailService,
+        verification_topic: UserVerificationTopic,
     ) -> None:
         self.repo = repo
         self.user_service = user_service
         self.mail_service = mail_service
+        self.verification_topic = verification_topic
         self.sso_strategy = None
 
     def set_sso_strategy(self, strategy: BaseSSOStrategy):
@@ -79,14 +75,54 @@ class AuthService:
 
     async def _validate_new_user(
         self, user_create: UserCreate, ctx: AppContext, session: AsyncSession
-    ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+    ) -> User | None:
+        existing_user = await self.repo.user_repo().get(
+            session=session,
+            query=UserQuery(email=str(user_create.email).lower()),
+            ctx=ctx,
+        )
+        if existing_user is not None and existing_user.status == UserStatus.ACTIVE:
+            raise BadRequestException("An account with this email already exists")
+        return existing_user
 
     async def _send_otp_mail(self, user: User, ctx: AppContext) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        otp = generate_otp()
+        await self.repo.user_repo().set_otp_code(user.email, otp, ctx=ctx)
+        try:
+            await self.verification_topic.publish_verification_email(user.email, otp)
+        except Exception:
+            # Registration is deliberately accepted after persistence. A repeat request for
+            # an inactive account regenerates and requeues the verification email.
+            logger.exception(
+                msg="Unable to queue verification email; registration can be retried",
+                context=ctx,
+            )
 
     async def create_user(self, user_create: UserCreate, ctx: AppContext) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        normalized_email = str(user_create.email).lower()
+
+        async def persist_user(session: AsyncSession) -> User:
+            user = await self._validate_new_user(
+                user_create, ctx=ctx, session=session
+            )
+            password_hash = bcrypt.hashpw(
+                user_create.password.encode("utf-8"), bcrypt.gensalt()
+            ).decode("utf-8")
+            if user is None:
+                user = User(
+                    name=user_create.name,
+                    email=normalized_email,
+                    password=password_hash,
+                    status=UserStatus.INACTIVE,
+                )
+            else:
+                user.name = user_create.name
+                user.password = password_hash
+                user.status = UserStatus.INACTIVE
+            return await self.repo.user_repo().save_user(session, user)
+
+        user = await self.repo.transaction_wrapper(persist_user)
+        await self._send_otp_mail(user, ctx=ctx)
 
     async def login_user(
         self, login_request: UserLogin, ctx: AppContext
@@ -109,7 +145,23 @@ class AuthService:
     async def validate_otp(
         self, otp_request: ValidateOTPRequest, ctx: AppContext
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        email = str(otp_request.email).lower()
+        stored_otp = await self.repo.user_repo().get_otp_code(email, ctx=ctx)
+        if stored_otp is None or not secrets.compare_digest(stored_otp, otp_request.otp):
+            raise BadRequestException("Invalid or expired verification code")
+
+        async def activate_user(session: AsyncSession) -> None:
+            user = await self.repo.user_repo().get(
+                session=session,
+                query=UserQuery(email=email),
+                ctx=ctx,
+            )
+            if user is None or user.status != UserStatus.INACTIVE:
+                raise BadRequestException("Invalid or expired verification code")
+            await self.repo.user_repo().activate_user(session, user)
+
+        await self.repo.transaction_wrapper(activate_user)
+        await self.repo.user_repo().delete_otp_code(email, ctx=ctx)
 
     async def refresh_token(
         self, refresh_token: str, ctx: AppContext

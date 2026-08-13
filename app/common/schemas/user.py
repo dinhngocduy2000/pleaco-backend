@@ -1,9 +1,8 @@
 from datetime import datetime
-import re
 import string
 from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import BadRequestException
@@ -82,44 +81,32 @@ class RefreshTokenRequest(BaseModel):
 
 
 class UserCreate(BaseModel):
-    name: str = Field(None, description="User's name")
-    email: str = Field(None, description="User's email")
-    password: str = Field(None, description="User's password")
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, max_length=50, description="User's name")
+    email: EmailStr = Field(..., description="User's email")
+    password: str = Field(..., description="User's password")
 
     @field_validator("password")
     def validate_password(cls, password: str) -> str:
         if len(password) < 8:
-            raise BadRequestException("Password must be at least 8 characters long")
+            raise ValueError("Password must be at least 8 characters long")
 
         if not any(password_character.isupper() for password_character in password):
-            raise BadRequestException(
-                "Password must contain at least one uppercase letter"
-            )
+            raise ValueError("Password must contain at least one uppercase letter")
 
         if not any(password_character.islower() for password_character in password):
-            raise BadRequestException(
-                "Password must contain at least one lowercase letter"
-            )
+            raise ValueError("Password must contain at least one lowercase letter")
 
         if not any(password_character.isdigit() for password_character in password):
-            raise BadRequestException("Password must contain at least one number")
+            raise ValueError("Password must contain at least one number")
 
         if not any(
             password_character in string.punctuation for password_character in password
         ):
-            raise BadRequestException(
-                "Password must contain at least one special character"
-            )
+            raise ValueError("Password must contain at least one special character")
 
         return password
-
-    @field_validator("email")
-    def validate_email(cls, email: str) -> str:
-        if not re.match(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", email):
-            raise ValueError("Invalid email address")
-
-        return email
-
 
 class UserLogin(BaseModel):
     email: str = Field("", description="User's email")
@@ -145,8 +132,10 @@ class UserLogin(BaseModel):
 
 
 class ValidateOTPRequest(BaseModel):
-    otp: str = Field(..., description="OTP")
-    email: str = Field(..., description="User's email")
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    otp: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$", description="OTP")
+    email: EmailStr = Field(..., description="User's email")
 
 
 class GoogleLoginRequest(BaseModel):

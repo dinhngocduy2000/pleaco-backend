@@ -25,9 +25,9 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     email: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     status: Mapped[UserStatus] = mapped_column(
-        Enum(UserStatus), nullable=False, default=UserStatus.PENDING, index=True
+        Enum(UserStatus), nullable=False, default=UserStatus.INACTIVE, index=True
     )
-    password: Mapped[str] = mapped_column(String(16), nullable=True)
+    password: Mapped[str] = mapped_column(String(255), nullable=True)
     image_url: Mapped[str] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -52,7 +52,6 @@ class User(Base):
         "Group", back_populates="owner"
     )
 
-    comments: Mapped[List["Comment"]] = relationship("Comment", back_populates="owner")  # type: ignore
-
-    def view(self, group: Optional[GroupInfo] = None) -> UserInfo:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+    comments: Mapped[List["Comment"]] = relationship(  # type: ignore
+        "Comment", back_populates="owner"
+    )
