@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.database import create_pg_engine
 from app.external.mail.mail import MailService
 from app.external.queues.queue import RabbitMQClient
+from app.external.queues.topics.user_verification import UserVerificationTopic
 from app.external.redis.redis import RedisClient
 from app.handler.auth import AuthHandler
 from app.handler.mail import MailHandler
@@ -35,12 +36,16 @@ class App:
             pg_engine = create_pg_engine()
             redis_client = RedisClient()
             rabbitmq_client = RabbitMQClient()
-            await rabbitmq_client.connect()
             self.application.state.rabbitmq = rabbitmq_client
             registry = Registry(pg_engine=pg_engine, redis_client=redis_client)
 
             # ------------ External Service ------------
             mail_service = MailService()
+            verification_topic = UserVerificationTopic(rabbitmq_client, mail_service)
+            try:
+                await verification_topic.start_consumer()
+            except Exception:
+                logger.exception("Unable to start verification-email consumer")
 
             # ------------ Service ------------
             user_service = UserService(repo=registry)
@@ -48,6 +53,7 @@ class App:
                 repo=registry,
                 user_service=user_service,
                 mail_service=mail_service,
+                verification_topic=verification_topic,
             )
 
             AuthMiddleware.init(auth_service=auth_service)

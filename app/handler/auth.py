@@ -75,8 +75,17 @@ class AuthHandler:
         raise NotImplementedError("Pleaco-specific implementation is pending.")
 
     @exception_handler
-    async def register_user(self, request: Request, user_create: UserCreate) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+    async def register_user(
+        self, request: Request, user_create: UserCreate
+    ) -> BaseResponse[str]:
+        ctx = AppContext(trace_id=uuid4(), action=REGISTER_USER)
+        logger.info(msg=f"Starting registration endpoint: {request.url}", context=ctx)
+        await self.service.create_user(user_create, ctx=ctx)
+        return BaseResponse(
+            data="Verification email queued",
+            message="Registration successful. Please verify your email.",
+            statusCode=201,
+        )
 
     @exception_handler
     async def refresh_token(
@@ -110,4 +119,11 @@ class AuthHandler:
     async def validate_otp(
         self, request: Request, validate_otp_request: ValidateOTPRequest
     ) -> BaseResponse[str]:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        ctx = AppContext(trace_id=uuid4(), action=VALIDATE_OTP)
+        logger.info(msg=f"Starting OTP validation endpoint: {request.url}", context=ctx)
+        await self.service.validate_otp(validate_otp_request, ctx=ctx)
+        return BaseResponse(
+            data="Account verified",
+            message="Your account has been verified.",
+            statusCode=200,
+        )
