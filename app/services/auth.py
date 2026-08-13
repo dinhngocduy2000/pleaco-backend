@@ -55,7 +55,10 @@ class AuthService:
         user_service: UserService,
         mail_service: MailService,
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.repo = repo
+        self.user_service = user_service
+        self.mail_service = mail_service
+        self.sso_strategy = None
 
     def set_sso_strategy(self, strategy: BaseSSOStrategy):
         raise NotImplementedError("Pleaco-specific implementation is pending.")

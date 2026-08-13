@@ -8,7 +8,7 @@ class UserHandler:
     service: UserService
 
     def __init__(self, service: UserService) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.service = service
 
     @exception_handler
     async def create_user(self, user_data: UserCreate) -> UserInfo:

@@ -7,4 +7,5 @@ class UserRouter:
     handler: UserHandler
 
     def __init__(self, handler: UserHandler) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.router = APIRouter(prefix="", tags=["Users"], redirect_slashes=False)
+        self.handler = handler

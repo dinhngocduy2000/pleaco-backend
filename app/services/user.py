@@ -21,7 +21,7 @@ class UserService:
     repo: Registry
 
     def __init__(self, repo: Registry) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.repo = repo
 
     async def create_user(self, user_create: UserCreate, ctx: AppContext) -> UserInfo:
         raise NotImplementedError("Pleaco-specific implementation is pending.")

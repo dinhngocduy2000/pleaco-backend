@@ -9,4 +9,5 @@ class MailRouter:
     handler: MailHandler
 
     def __init__(self, handler: MailHandler) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.router = APIRouter(prefix="", tags=["Mail"])
+        self.handler = handler

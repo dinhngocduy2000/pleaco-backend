@@ -25,7 +25,7 @@ class MailHandler:
     def __init__(
         self, service: BaseNotificationChannels[SendMailRequest, SendMailResponse]
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.service = service
 
     @exception_handler
     async def send_email(

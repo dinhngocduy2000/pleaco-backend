@@ -1,21 +1,25 @@
+FROM python:3.11-slim
 
-FROM public.ecr.aws/lambda/python:3.12
+WORKDIR /app
 
-# ── Lambda expects your code & deps in this directory ──
-WORKDIR ${LAMBDA_TASK_ROOT}
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
-# ── Copy & install production dependencies first (best layer caching) ──
+# Copy requirements first for better caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir --target "${LAMBDA_TASK_ROOT}" -r requirements.txt
 
-# ── Copy the entire app/ folder
-#    → ends up as ${LAMBDA_TASK_ROOT}/app/
-COPY app/ ./app/
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Optional: reduce image size (remove caches & compiled files)
-RUN find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
-    find . -type f -name "*.pyc"       -delete             || true
+# Copy application code
+COPY . .
 
+# Expose port
+EXPOSE 8000
 
-CMD ["app.cmd.main.lambda_handler"]
+# Run the application
+CMD ["uvicorn", "app.cmd.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 

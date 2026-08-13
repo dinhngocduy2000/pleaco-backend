@@ -14,4 +14,5 @@ class AuthRouter:
     handler: AuthHandler
 
     def __init__(self, handler: AuthHandler) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.router = APIRouter(prefix="", tags=["Auth"])
+        self.handler = handler

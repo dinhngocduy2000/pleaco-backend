@@ -42,7 +42,7 @@ class AuthHandler:
     service: AuthService
 
     def __init__(self, service: AuthService) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self.service = service
 
     def _set_cookies_tokens(
         self,

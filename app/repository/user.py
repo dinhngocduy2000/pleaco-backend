@@ -23,16 +23,29 @@ class UserRepository:
     _redis_client: RedisClient
 
     def __init__(self, redis_client: RedisClient) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        self._redis_client = redis_client
 
     def _prepare_query(self, query: UserQuery, stmt: Select) -> Select:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        stmt = stmt.where(User.status != UserStatus.DELETED)
+
+        if query.id is not None:
+            stmt = stmt.where(User.id == query.id)
+        if query.email is not None:
+            stmt = stmt.where(User.email == query.email)
+        if query.name is not None:
+            stmt = stmt.where(User.name == query.name)
+        if query.status is not None:
+            stmt = stmt.where(User.status == query.status)
+
+        return stmt
 
     async def create_user(self, session: AsyncSession, user_info: User) -> UserInfo:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        session.add(user_info)  # Note: session.add() is NOT async, no await needed
+        await session.flush()  # Flush to get the ID if needed
+        return user_info.view()
 
     async def get_list_users(self, session: AsyncSession) -> List[str]:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        pass
 
     async def update_user(
         self,
@@ -41,13 +54,23 @@ class UserRepository:
         user_update: UserUpdate,
         ctx: AppContext,
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            user_update_data = user_update.model_dump(mode="python", exclude_none=True)
+            if user_update_data is not None:
+                stmt = update(User).where(User.id == user_id)
+                stmt = stmt.values(user_update_data)
+            await session.execute(stmt)
+            await session.flush()
+        except Exception as e:
+            logger.error(msg=f"Update user repository: Exception: {e}", context=ctx)
+            raise e
+        return
 
     async def delete_user(self, session: AsyncSession, user_id: str) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        pass
 
     async def get_user_by_id(self, session: AsyncSession, user_id: str) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        pass
 
     async def get(
         self,
@@ -56,7 +79,16 @@ class UserRepository:
         ctx: AppContext,
         options: Optional[UserJoinOption] = None,
     ) -> Optional[User]:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            stmt = select(User)
+            stmt = self._prepare_query(query, stmt)
+
+            result = await session.execute(stmt)
+            user = result.scalars().first()
+            return user if user else None
+        except Exception as e:
+            logger.error(msg=f"Get user repository: Exception: {e}", context=ctx)
+            raise e
 
     # ---------------- Redis ----------------
 
@@ -66,23 +98,65 @@ class UserRepository:
         ctx: AppContext,
         expire: Optional[int] = settings.ACCESS_TOKEN_EXPIRE_SECONDS,
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            await self._redis_client.set(
+                f"{settings.cache_token_hash}:{hashed_token}",
+                hashed_token,
+                expire=expire,
+            )
+        except Exception as e:
+            logger.error(
+                msg=f"Set hashed token repository: Exception: {e}", context=ctx
+            )
+            raise e
 
     async def get_token(self, hashed_token: str, ctx: AppContext) -> str:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            return await self._redis_client.get(
+                f"{settings.cache_token_hash}:{hashed_token}"
+            )
+        except Exception as e:
+            logger.error(msg=f"Get token repository: Exception: {e}", context=ctx)
+            raise e
 
     async def delete_token(self, hashed_token: str, ctx: AppContext) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            await self._redis_client.delete(
+                f"{settings.cache_token_hash}:{hashed_token}"
+            )
+        except Exception as e:
+            logger.error(msg=f"Delete token repository: Exception: {e}", context=ctx)
+            raise e
 
     async def set_otp_code(self, email: str, otp_code: str, ctx: AppContext) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            await self._redis_client.set(
+                f"{settings.CACHE_OTP_CODE}:{email}",
+                otp_code,
+                expire=settings.OTP_CODE_EXPIRE_SECONDS,
+            )
+        except Exception as e:
+            logger.error(msg=f"Set OTP code repository: Exception: {e}", context=ctx)
+            raise e
 
     async def get_otp_code(
         self, otp_request: ValidateOTPRequest, ctx: AppContext
     ) -> str:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            return await self._redis_client.get(
+                f"{settings.CACHE_OTP_CODE}:{otp_request.email}",
+            )
+        except Exception as e:
+            logger.error(msg=f"Get OTP code repository: Exception: {e}", context=ctx)
+            raise e
 
     async def delete_otp_code(
         self, otp_request: ValidateOTPRequest, ctx: AppContext
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            await self._redis_client.delete(
+                f"{settings.CACHE_OTP_CODE}:{otp_request.email}",
+            )
+        except Exception as e:
+            logger.error(msg=f"Delete OTP code repository: Exception: {e}", context=ctx)
+            raise e
