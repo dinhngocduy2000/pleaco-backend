@@ -32,5 +32,5 @@ class Registry:
             if session is not None and session.is_active:
                 await session.close()
 
-    # def user_repo(self) -> UserRepository:
-    #     return self._user_repo
+    def user_repo(self) -> UserRepository:
+        return self._user_repo

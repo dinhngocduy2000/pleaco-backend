@@ -87,7 +87,7 @@ class RabbitMQClient:
                 timeout=self._connect_timeout,
                 client_properties={"connection_name": "pleaco-backend"},
             )
-            logger.info(msg="RabbitMQ connection established")
+            logger.info(msg="RabbitMQ Client - RabbitMQ connection established")
 
     async def close(self) -> None:
         """Stop consumers, close channels, and close the AMQP connection."""
@@ -98,7 +98,10 @@ class RabbitMQClient:
             except Exception:
                 logger.exception(msg="Unable to close RabbitMQ consumer cleanly")
 
-        if self._publisher_channel is not None and not self._publisher_channel.is_closed:
+        if (
+            self._publisher_channel is not None
+            and not self._publisher_channel.is_closed
+        ):
             await self._publisher_channel.close()
         self._publisher_channel = None
 
@@ -192,6 +195,13 @@ class RabbitMQClient:
         return subscription
 
     async def _declare_exchange(self, exchange_name: str) -> AbstractExchange:
+        """Idempotently declare and return a durable topic exchange for publishing.
+
+        Declaration occurs on the shared publisher channel. RabbitMQ treats a
+        compatible redeclaration as a no-op, allowing publishers to initialise
+        independently and allowing aio-pika to restore the exchange after a
+        reconnect.
+        """
         channel = await self._publisher_channel_for_use()
         return await channel.declare_exchange(
             exchange_name,
@@ -200,14 +210,24 @@ class RabbitMQClient:
         )
 
     async def _publisher_channel_for_use(self) -> AbstractChannel:
-        if (
-            self._publisher_channel is None
-            or self._publisher_channel.is_closed
-        ):
+        """Return the reusable publisher channel, recreating it when necessary.
+
+        A channel can close independently from the robust connection (for
+        example, following a broker-side channel exception). A fresh robust
+        channel is created lazily so subsequent publishes can recover.
+        """
+        if self._publisher_channel is None or self._publisher_channel.is_closed:
             self._publisher_channel = await self._new_channel()
         return self._publisher_channel
 
     async def _new_channel(self, prefetch_count: int | None = None) -> AbstractChannel:
+        """Open a publisher-confirming robust channel on the live connection.
+
+        ``prefetch_count`` is set only for consumer channels to cap the number
+        of unacknowledged deliveries handled concurrently by that consumer.
+        Publisher confirms make ``publish`` wait until RabbitMQ accepts or
+        rejects the message.
+        """
         await self.connect()
         assert self._connection is not None
         channel = await self._connection.channel(publisher_confirms=True)
@@ -217,12 +237,24 @@ class RabbitMQClient:
 
     @staticmethod
     def _serialize_payload(payload: JsonPayload) -> bytes:
+        """Convert a mapping or Pydantic model into compact UTF-8 JSON bytes.
+
+        Pydantic's JSON mode preserves JSON-compatible representations for
+        values such as datetimes and UUIDs. ``default=str`` makes plain mapping
+        payloads tolerant of equivalent non-JSON-native values.
+        """
         if isinstance(payload, BaseModel):
             payload = payload.model_dump(mode="json")
         return json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
 
     @staticmethod
     def _deserialize_payload(body: bytes) -> dict[str, Any]:
+        """Decode a UTF-8 JSON object received from RabbitMQ.
+
+        Topic payloads are intentionally restricted to JSON objects so message
+        handlers always receive named fields. Invalid UTF-8/JSON is surfaced to
+        the consumer callback, which rejects the delivery without requeuing it.
+        """
         payload = json.loads(body.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("RabbitMQ message payload must be a JSON object")
