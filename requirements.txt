@@ -54,3 +54,4 @@ uvloop==0.22.1
 watchfiles==1.1.1
 websockets==16.0
 mangum>=0.18.0
+aio-pika==10.0.1

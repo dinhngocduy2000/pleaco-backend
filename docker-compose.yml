@@ -4,7 +4,7 @@ services:
   db:
     image: postgres:15-alpine
     container_name: pleaco_postgres
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -22,7 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis
-    restart: unless-stopped
+    restart: always
     ports:
       - "6379:6379"
     environment:
@@ -33,6 +33,19 @@ services:
     command: sh -c "redis-server /etc/redis/redis.conf --requirepass \"$$REDIS_PASSWORD\""
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: pleaco_rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -49,10 +62,13 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_HOST=${REDIS_HOST}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     env_file:
       - .env

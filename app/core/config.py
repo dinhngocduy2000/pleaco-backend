@@ -60,6 +60,11 @@ class Settings(BaseAppSettings):
     cache_token_hash: Optional[str] = "token-hashed"
     CACHE_OTP_CODE: Optional[str] = "CACHE_OTP_CODE"
 
+    # Message queue / RabbitMQ
+    # A complete AMQP URL keeps deployment configuration in one portable setting.
+    RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
+    RABBITMQ_CONNECT_TIMEOUT: float = 10.0
+
     # Google OAuth (for Sign in with Google)
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

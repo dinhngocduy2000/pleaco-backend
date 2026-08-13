@@ -14,6 +14,7 @@ from app.common.middleware.auth_middleware import AuthMiddleware
 from app.core.config import settings
 from app.core.database import create_pg_engine
 from app.external.mail.mail import MailService
+from app.external.queues.queue import RabbitMQClient
 from app.external.redis.redis import RedisClient
 from app.handler.auth import AuthHandler
 from app.handler.mail import MailHandler
@@ -33,6 +34,9 @@ class App:
         async def start_app() -> None:
             pg_engine = create_pg_engine()
             redis_client = RedisClient()
+            rabbitmq_client = RabbitMQClient()
+            await rabbitmq_client.connect()
+            self.application.state.rabbitmq = rabbitmq_client
             registry = Registry(pg_engine=pg_engine, redis_client=redis_client)
 
             # ------------ External Service ------------
@@ -78,7 +82,9 @@ class App:
     def on_terminate_app(self) -> Callable:
         @logger.catch
         async def stop_app() -> None:
-            pass
+            rabbitmq_client = getattr(self.application.state, "rabbitmq", None)
+            if rabbitmq_client is not None:
+                await rabbitmq_client.close()
 
         return stop_app
 
