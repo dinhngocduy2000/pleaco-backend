@@ -1,12 +1,11 @@
 from pathlib import Path
-from typing import Callable
-
+from collections.abc import  Callable
+from app.external.queues.topics.base import init_topics
 from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-from mangum import Mangum
 from starlette.requests import Request
 
 from app.common.middleware import register_middleware
@@ -31,6 +30,8 @@ from app.services.user import UserService
 class App:
     application: FastAPI
 
+
+
     def on_init_app(self) -> Callable:
         async def start_app() -> None:
             pg_engine = create_pg_engine()
@@ -42,10 +43,9 @@ class App:
             # ------------ External Service ------------
             mail_service = MailService()
             verification_topic = UserVerificationTopic(rabbitmq_client, mail_service)
-            try:
-                await verification_topic.start_consumer()
-            except Exception:
-                logger.exception("Unable to start verification-email consumer")
+            await init_topics(
+                consumers={"verification-email": verification_topic.start_consumer}
+            )
 
             # ------------ Service ------------
             user_service = UserService(repo=registry)
@@ -144,4 +144,3 @@ class App:
 
 
 app = App().application
-lambda_handler = Mangum(app)

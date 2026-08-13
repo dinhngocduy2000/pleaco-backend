@@ -1,15 +1,32 @@
 """A domain-friendly façade over RabbitMQ topic exchanges."""
 
+import asyncio
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from app.common.middleware.logger import Logger
 from app.external.queues.queue import (
     JsonPayload,
     MessageHandler,
     RabbitMQClient,
     TopicSubscription,
 )
+logger = Logger()
 
+async def init_topics(
+        consumers: Mapping[str, Callable[[], Awaitable[None]]]
+    ) -> None:
+        """Start independent RabbitMQ consumers concurrently during application startup."""
+        consumer_names = list(consumers)
+        results = await asyncio.gather(
+            *(consumer() for consumer in consumers.values()),
+            return_exceptions=True,
+        )
+        for consumer_name, result in zip(consumer_names, results):
+            if isinstance(result, Exception):
+                logger.error(
+                    msg=f"Unable to start {consumer_name} consumer: {result}"
+                )
 
 class Topic:
     """A named topic exchange that services can publish to or subscribe from.
