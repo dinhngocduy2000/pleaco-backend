@@ -1,4 +1,7 @@
+import asyncio
 import secrets
+from datetime import datetime, timedelta, timezone
+import hashlib
 from typing import Tuple
 from uuid import UUID
 
@@ -62,16 +65,67 @@ class AuthService:
     def _validate_login_user(
         self, user: User, ctx: AppContext, login_request: UserLogin
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        if user.status != UserStatus.ACTIVE:
+            raise BadRequestException("Account is not active. Please verify your email.")
+
+        if not user.password:
+            raise BadRequestException("Incorrect password")
+
+        try:
+            password_is_valid = bcrypt.checkpw(
+                login_request.password.encode("utf-8"), user.password.encode("utf-8")
+            )
+        except ValueError:
+            password_is_valid = False
+
+        if not password_is_valid:
+            raise BadRequestException("Incorrect password")
+
+    def _credential_payload(self, user: User, expires_in: int) -> dict:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        credential = Credential(
+            id=user.id,
+            email=user.email,
+            status=user.status,
+            exp_time=expires_at,
+            active_group_id=user.active_group_id,
+        )
+        payload = credential.model_dump(mode="json")
+        payload["exp"] = expires_at
+        return payload
 
     def _generate_access_token(self, user: User) -> str:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        payload = self._credential_payload(user, settings.ACCESS_TOKEN_EXPIRE_SECONDS)
+        payload["token_type"] = "access"
+        return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
     def _generate_refresh_token(self, user: User) -> str:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        payload = self._credential_payload(user, settings.REFRESH_TOKEN_EXPIRE_SECONDS)
+        payload["token_type"] = "refresh"
+        return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
     async def _generate_tokens(self, user: User, ctx: AppContext) -> UserLoginResponse:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        access_token = self._generate_access_token(user)
+        refresh_token = self._generate_refresh_token(user)
+        hashed_access_token = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+        hashed_refresh_token = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        await asyncio.gather(
+            self.repo.user_repo().set_hashed_token(
+                hashed_access_token, ctx, expire=settings.ACCESS_TOKEN_EXPIRE_SECONDS
+            ),
+            self.repo.user_repo().set_hashed_token(
+                hashed_refresh_token, ctx, expire=settings.REFRESH_TOKEN_EXPIRE_SECONDS
+            ),
+        )
+        return UserLoginResponse(
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            status=user.status,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
+        )
 
     async def _validate_new_user(
         self, user_create: UserCreate, ctx: AppContext, session: AsyncSession
@@ -127,7 +181,21 @@ class AuthService:
     async def login_user(
         self, login_request: UserLogin, ctx: AppContext
     ) -> UserLoginResponse:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        normalized_email = str(login_request.email).lower()
+
+        async def authenticate(session: AsyncSession) -> User:
+            user = await self.repo.user_repo().get(
+                session=session,
+                query=UserQuery(email=normalized_email),
+                ctx=ctx,
+            )
+            if user is None:
+                raise BadRequestException("Account does not exist")
+            self._validate_login_user(user, ctx=ctx, login_request=login_request)
+            return user
+
+        user = await self.repo.transaction_wrapper(authenticate)
+        return await self._generate_tokens(user, ctx=ctx)
 
     def get_sso_auth_url(self, ctx: AppContext) -> Tuple[str, str]:
         raise NotImplementedError("Pleaco-specific implementation is pending.")
@@ -180,4 +248,21 @@ class AuthService:
     async def logout(
         self, ctx: AppContext, response: Response, request: Request
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            access_token = request.cookies.get("access_token")
+            refresh_token = request.cookies.get("refresh_token")
+            hashed_access_token = hashlib.sha256(
+                access_token.encode("utf-8")
+            ).hexdigest()
+            hashed_refresh_token = hashlib.sha256(
+                refresh_token.encode("utf-8")
+            ).hexdigest()
+
+            await self.repo.user_repo().delete_token(hashed_access_token, ctx)
+            await self.repo.user_repo().delete_token(hashed_refresh_token, ctx)
+            response.delete_cookie("access_token")
+            response.delete_cookie("refresh_token")
+            return
+        except Exception as e:
+            logger.error(msg=f"Logout service: Exception: {e}", context=ctx)
+            raise e

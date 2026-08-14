@@ -41,6 +41,9 @@ class UserLoginResponse(UserBase):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(None, description="User's refresh token")
+    is_save_session: Optional[bool] = Field(
+        True, description="Whether to save the session"
+    )
 
     @field_validator("refresh_token")
     def validate_refresh_token(cls, refresh_token: str) -> str:
@@ -73,13 +76,6 @@ class UserJoinOption(BaseModel):
         None, description="Whether to include groups in the response"
     )
 
-
-class RefreshTokenRequest(BaseModel):
-    is_save_session: Optional[bool] = Field(
-        True, description="Whether to save the session"
-    )
-
-
 class UserCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -109,26 +105,11 @@ class UserCreate(BaseModel):
         return password
 
 class UserLogin(BaseModel):
-    email: str = Field("", description="User's email")
-    password: str = Field("", description="User's password")
-    is_save_session: Optional[bool] = Field(
-        True, description="Whether to save the session"
+    email: EmailStr = Field(..., description="User's email")
+    password: str = Field(..., min_length=1, description="User's password")
+    is_save_session: bool = Field(
+        False, description="Whether to save the session"
     )
-
-    @field_validator("email")
-    def validate_email(cls, email: str) -> str:
-        if not re.match(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", email):
-            raise ValueError("Invalid email address")
-        if email is None:
-            raise BadRequestException("Email is required")
-        return email
-
-    @field_validator("password")
-    def validate_password(cls, password: str) -> str:
-        if password is None:
-            raise BadRequestException("Password is required")
-
-        return password
 
 
 class ValidateOTPRequest(BaseModel):
