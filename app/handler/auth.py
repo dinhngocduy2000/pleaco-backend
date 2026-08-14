@@ -189,7 +189,9 @@ class AuthHandler:
     ) -> BaseResponse[UserInfo]:
         ctx = AppContext(trace_id=uuid4(), action=GET_CURRENT_USER_PROFILE)
         logger.info(msg=f"Getting current user profile: {request.url}", context=ctx)
-        user_profile = await self.service.get_current_user(credential.id, ctx)
+        user_profile = await self.service.get_current_user(
+            credential.id, ctx
+        )
         return BaseResponse(
             data=user_profile,
             message="Current user profile retrieved successfully",

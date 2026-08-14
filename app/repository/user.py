@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.user_status import UserStatus
 from app.common.middleware.logger import Logger
+from app.common.schemas.common import HashMapResponse
 from app.common.schemas.user import (
     UserInfo,
     UserJoinOption,
@@ -14,6 +15,7 @@ from app.common.schemas.user import (
 )
 from app.external.redis.redis import RedisClient
 from app.models.user import User
+from app.models.group import Group
 from app.core.config import settings
 
 logger = Logger()
@@ -91,6 +93,57 @@ class UserRepository:
             logger.error(msg=f"Get user repository: Exception: {e}", context=ctx)
             raise e
 
+    async def get_user_profile(
+        self,
+        session: AsyncSession,
+        user_id: PythonUUID,
+        ctx: AppContext,
+        options: UserJoinOption | None = None,
+    ) -> UserInfo | None:
+        try:
+            include_group = (
+                options is not None and options.included_owned_groups is True
+            )
+            if include_group:
+                stmt = (
+                    select(User, Group)
+                    .outerjoin(Group, User.active_group_id == Group.id)
+                    .where(User.id == user_id, User.status != UserStatus.DELETED)
+                )
+                result = await session.execute(stmt)
+                row = result.first()
+                if row is None:
+                    return None
+                user, group = row
+            else:
+                user = await self.get(
+                    session=session,
+                    query=UserQuery(id=user_id),
+                    ctx=ctx,
+                )
+                group = None
+
+            if user is None:
+                return None
+            return UserInfo(
+                id=user.id,
+                name=user.name,
+                email=user.email,
+                status=user.status,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
+                image_url=user.image_url,
+                group_id=user.active_group_id,
+                group=(
+                    HashMapResponse(value=group.id, label=group.name)
+                    if group is not None
+                    else None
+                ),
+            )
+        except Exception as e:
+            logger.error(msg=f"Get user profile repository: Exception: {e}", context=ctx)
+            raise
+
     # ---------------- Redis ----------------
 
     @staticmethod
@@ -119,8 +172,8 @@ class UserRepository:
     ) -> None:
         try:
             await self._redis_client.set(
-                self._user_profile_cache_key(user_profile.id),
-                user_profile.model_dump_json(),
+                key=self._user_profile_cache_key(user_profile.id),
+                value=user_profile.model_dump_json(),
                 expire=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
             )
         except Exception as e:
