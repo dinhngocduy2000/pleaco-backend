@@ -1,5 +1,6 @@
 from pathlib import Path
 from collections.abc import  Callable
+from app.core.rbac.permissions import PermissionService
 from app.external.queues.topics.base import init_topics
 from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -17,13 +18,16 @@ from app.external.queues.queue import RabbitMQClient
 from app.external.queues.topics.user_verification import UserVerificationTopic
 from app.external.redis.redis import RedisClient
 from app.handler.auth import AuthHandler
+from app.handler.group import GroupHandler
 from app.handler.mail import MailHandler
 from app.handler.user import UserHandler
 from app.repository.registry import Registry
 from app.router.auth import AuthRouter
+from app.router.group import GroupRouter
 from app.router.mail import MailRouter
 from app.router.user import UserRouter
 from app.services.auth import AuthService
+from app.services.group import GroupService
 from app.services.user import UserService
 
 
@@ -55,18 +59,21 @@ class App:
                 mail_service=mail_service,
                 verification_topic=verification_topic,
             )
-
+            permission_service = PermissionService(repo=registry)
+            group_service = GroupService(repo=registry, permission_service=permission_service)
             AuthMiddleware.init(auth_service=auth_service)
 
             # ------------ Handler ------------
             user_handler = UserHandler(service=user_service)
             auth_handler = AuthHandler(service=auth_service)
             mail_handler = MailHandler(service=mail_service)
+            group_handler = GroupHandler(service=group_service)
 
             # ------------ Router ------------
             user_router = UserRouter(handler=user_handler)
             auth_router = AuthRouter(handler=auth_handler)
             mail_router = MailRouter(handler=mail_handler)
+            group_router = GroupRouter(handler=group_handler)
             self.application.include_router(
                 user_router.router,
                 prefix=settings.API_V1_PREFIX + "/users",
@@ -81,6 +88,11 @@ class App:
                 mail_router.router,
                 prefix=settings.API_V1_PREFIX + "/mail",
                 tags=["Mail"],
+            )
+            self.application.include_router(
+                group_router.router,
+                prefix=settings.API_V1_PREFIX + "/groups",
+                tags=["Groups"],
             )
 
         return start_app

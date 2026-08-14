@@ -33,21 +33,22 @@ class UserRepositoryStub:
         self.joined_profile: UserInfo | None = None
         self.cached_token_queries: list[str] = []
 
-    async def get_cached_user_profile(self, user_id, ctx) -> UserInfo | None:
-        self.cache_queries += 1
-        return self.cached_profile
-
-    async def get_user_profile(
+    async def get_user_profile_with_cache(
         self, *, user_id, options: UserJoinOption | None = None, **kwargs
     ) -> UserInfo | None:
+        if options is not None and options.included_owned_groups is True:
+            self.queried_user_id = user_id
+            self.queried_options = options
+            return self.joined_profile
+        self.cache_queries += 1
+        if self.cached_profile is not None:
+            return self.cached_profile
         self.queried_user_id = user_id
         self.queried_options = options
-        if options is not None and options.included_owned_groups is True:
-            return self.joined_profile
-        return AuthService._to_user_info(self.user) if self.user is not None else None
-
-    async def set_cached_user_profile(self, user_profile: UserInfo, ctx) -> None:
-        self.cached_after_miss = user_profile
+        self.cached_after_miss = (
+            AuthService._to_user_info(self.user) if self.user is not None else None
+        )
+        return self.cached_after_miss
 
     async def get_token(self, hashed_token: str, ctx) -> str:
         self.cached_token_queries.append(hashed_token)

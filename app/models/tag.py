@@ -29,9 +29,3 @@ class Tag(Base):
     color: Mapped[str] = mapped_column(String(7), nullable=False)
     description: Mapped[str] = mapped_column(String(255), nullable=True)
 
-    events: Mapped[List["EventTag"]] = relationship(  # type: ignore
-        "EventTag", back_populates="tag"
-    )
-
-    def view(self) -> TagInfo:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")

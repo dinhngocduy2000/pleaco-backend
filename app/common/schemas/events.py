@@ -106,7 +106,3 @@ class EventJoinOptions(BaseModel):
         default=False, description="Include owner in the response"
     )
 
-
-class EventTagCreate(BaseModel):
-    event_id: UUID = Field(None, description="Event's id")
-    tag_id: UUID = Field(None, description="Tag's id")

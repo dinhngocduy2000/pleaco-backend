@@ -573,31 +573,16 @@ class AuthService:
         Returns:
             The cached or persisted user profile, or ``None`` when absent.
         """
-        cached_profile = await self.repo.user_repo().get_cached_user_profile(
-            user_id, ctx
-        )
-        if cached_profile is not None:
-            logger.info(msg=f"User profile found in cache", context=ctx)
-            return cached_profile
-
-        logger.info(
-            msg=f"User profile not found in cache, fetching from DB...", context=ctx)
-
         async def get_user_profile(session: AsyncSession) -> UserInfo | None:
-            """Fetch the profile and optional group projection in one transaction."""
-            return await self.repo.user_repo().get_user_profile(
+            """Load the profile through the reusable repository cache-aside query."""
+            return await self.repo.user_repo().get_user_profile_with_cache(
                 session=session,
                 user_id=user_id,
                 ctx=ctx,
                 options=options,
             )
 
-        user_profile = await self.repo.transaction_wrapper(get_user_profile)
-        if user_profile is not None:
-            logger.info(
-                msg=f"User profile fetched from DB, writing to redis cache...", context=ctx)
-            await self.repo.user_repo().set_cached_user_profile(user_profile, ctx)
-        return user_profile
+        return await self.repo.transaction_wrapper(get_user_profile)
 
     async def get_current_user(
         self,

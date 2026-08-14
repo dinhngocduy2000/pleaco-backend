@@ -51,7 +51,3 @@ class User(Base):
     owned_groups: Mapped[List["Group"]] = relationship(  # type: ignore
         "Group", back_populates="owner"
     )
-
-    comments: Mapped[List["Comment"]] = relationship(  # type: ignore
-        "Comment", back_populates="owner"
-    )

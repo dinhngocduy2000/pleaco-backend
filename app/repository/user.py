@@ -144,6 +144,44 @@ class UserRepository:
             logger.error(msg=f"Get user profile repository: Exception: {e}", context=ctx)
             raise
 
+    async def get_user_profile_with_cache(
+        self,
+        session: AsyncSession,
+        user_id: PythonUUID,
+        ctx: AppContext,
+        options: UserJoinOption | None = None,
+    ) -> UserInfo | None:
+        """Load a user profile from Redis, falling back to PostgreSQL on a miss.
+
+        Group-inclusive profiles bypass the cache because the cached profile does
+        not contain the optional active-group projection.
+        """
+        include_group = options is not None and options.included_owned_groups is True
+        if not include_group:
+            cached_profile = await self.get_cached_user_profile(user_id, ctx)
+            if cached_profile is not None:
+                logger.info(msg="User profile found in cache", context=ctx)
+                return cached_profile
+
+            logger.info(
+                msg="User profile not found in cache, fetching from DB...",
+                context=ctx,
+            )
+
+        user_profile = await self.get_user_profile(
+            session=session,
+            user_id=user_id,
+            ctx=ctx,
+            options=options,
+        )
+        if user_profile is not None and not include_group:
+            logger.info(
+                msg="User profile fetched from DB, writing to redis cache...",
+                context=ctx,
+            )
+            await self.set_cached_user_profile(user_profile, ctx)
+        return user_profile
+
     # ---------------- Redis ----------------
 
     @staticmethod
