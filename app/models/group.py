@@ -2,8 +2,7 @@ from datetime import datetime
 from typing import List, TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, String, DateTime, func, inspect
-from app.common.schemas.group import GroupInfo
+from sqlalchemy import ForeignKey, String, DateTime, func
 from app.core.database import Base
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -44,7 +43,3 @@ class Group(Base):
     members: Mapped[List["GroupMembers"]] = relationship(  # type: ignore
         "GroupMembers", back_populates="group"
     )
-
-    def view(self) -> GroupInfo:
-        # Check if members relationship is loaded to avoid lazy loading in async context
-        raise NotImplementedError("Pleaco-specific implementation is pending.")

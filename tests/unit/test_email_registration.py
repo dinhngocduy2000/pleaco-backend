@@ -35,9 +35,9 @@ class UserRepositoryStub:
         self.saved_user = user
         return user
 
-    async def activate_user(self, session, user: User) -> User:
-        user.status = UserStatus.ACTIVE
-        return user
+    async def update_user(self, session, user_id, user_update, **kwargs) -> None:
+        assert self.user is not None
+        self.user.status = user_update.status
 
     async def set_otp_code(self, email: str, otp: str, **kwargs) -> None:
         self.otp = otp

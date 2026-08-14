@@ -44,14 +44,6 @@ class UserRepository:
         await session.flush()
         return user
 
-    async def activate_user(
-        self, session: AsyncSession, user: User
-    ) -> User:
-        """Mark a verified user as active within the caller's transaction."""
-        user.status = UserStatus.ACTIVE
-        await session.flush()
-        return user
-
     async def get_list_users(self, session: AsyncSession) -> List[str]:
         pass
 

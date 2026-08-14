@@ -81,7 +81,7 @@ class AuthService:
             query=UserQuery(email=str(user_create.email).lower()),
             ctx=ctx,
         )
-        if existing_user is not None and existing_user.status == UserStatus.ACTIVE:
+        if existing_user is not None:
             raise BadRequestException("An account with this email already exists")
         return existing_user
 
@@ -150,7 +150,7 @@ class AuthService:
         if stored_otp is None or not secrets.compare_digest(stored_otp, otp_request.otp):
             raise BadRequestException("Invalid or expired verification code")
 
-        async def activate_user(session: AsyncSession) -> None:
+        async def validate_and_update_user(session: AsyncSession) -> None:
             user = await self.repo.user_repo().get(
                 session=session,
                 query=UserQuery(email=email),
@@ -158,9 +158,14 @@ class AuthService:
             )
             if user is None or user.status != UserStatus.INACTIVE:
                 raise BadRequestException("Invalid or expired verification code")
-            await self.repo.user_repo().activate_user(session, user)
+            await self.repo.user_repo().update_user(
+                session=session,
+                user_id=user.id,
+                user_update=UserUpdate(status=UserStatus.ACTIVE),
+                ctx=ctx,
+            )
 
-        await self.repo.transaction_wrapper(activate_user)
+        await self.repo.transaction_wrapper(validate_and_update_user)
         await self.repo.user_repo().delete_otp_code(email, ctx=ctx)
 
     async def refresh_token(

@@ -43,5 +43,4 @@ class GroupMembers(Base):
     user: Mapped["User"] = relationship("User", back_populates="group_members")  # type: ignore
     group: Mapped["Group"] = relationship("Group", back_populates="members")  # type: ignore
 
-    def view(self) -> GroupMemberInfo:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+
