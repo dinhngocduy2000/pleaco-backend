@@ -44,7 +44,3 @@ class Group(Base):
     members: Mapped[List["GroupMembers"]] = relationship(  # type: ignore
         "GroupMembers", back_populates="group"
     )
-
-    def view(self) -> GroupInfo:
-        # Check if members relationship is loaded to avoid lazy loading in async context
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
