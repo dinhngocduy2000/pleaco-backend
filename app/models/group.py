@@ -2,8 +2,7 @@ from datetime import datetime
 from typing import List, TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, String, DateTime, func, inspect
-from app.common.schemas.group import GroupInfo
+from sqlalchemy import ForeignKey, String, DateTime, func
 from app.core.database import Base
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
