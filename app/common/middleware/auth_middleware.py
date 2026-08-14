@@ -47,6 +47,11 @@ class AuthMiddleware:
         decoded_token = jwt.decode(
             access_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
+        if decoded_token.get("token_type") != "access":
+            logger.error(msg="Invalid token type", context=ctx)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+            )
         logger.info(msg=f"User status: {decoded_token['status']}", context=ctx)
         if decoded_token["status"] in [
             UserStatus.DELETED,

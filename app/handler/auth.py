@@ -48,15 +48,40 @@ class AuthHandler:
         self,
         response: Response,
         login_response: UserLoginResponse,
-        is_save_session: Optional[bool] = True,
+        is_save_session: bool = False,
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        response.set_cookie(
+            key="access_token",
+            value=login_response.access_token,
+            httponly=True,
+            secure=True,  # critical on http
+            samesite="lax",
+            max_age=login_response.expires_in if is_save_session else None,
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=login_response.refresh_token,
+            httponly=True,
+            secure=True,  # critical on http
+            samesite="lax",
+            max_age=(
+                settings.REFRESH_TOKEN_EXPIRE_SECONDS if is_save_session else None
+            ),
+        )
 
     @exception_handler
     async def authenticate_user(
         self, login_request: UserLogin, response: Response, request: Request
-    ) -> str:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+    ) -> UserLoginResponse:
+        ctx = AppContext(trace_id=uuid4(), action=AUTHENTICATE_USER)
+        logger.info(msg=f"Starting login endpoint: {request.url}", context=ctx)
+        login_response = await self.service.login_user(login_request, ctx=ctx)
+        self._set_cookies_tokens(
+            response=response,
+            login_response=login_response,
+            is_save_session=login_request.is_save_session,
+        )
+        return login_response
 
     @exception_handler
     async def get_sso_auth_url(
