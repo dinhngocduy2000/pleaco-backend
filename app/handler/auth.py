@@ -90,14 +90,47 @@ class AuthHandler:
         request: Request,
         provider: SSO_PROVIDERS = Query(..., description="SSO Auth Provilder"),
     ) -> SSOLoginResponse:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        ctx = SSOFactory.resolve_sso_context(provider)
+        strategy = SSOFactory.resolve_sso_strategy(provider)
+        url, state = self.service.get_sso_auth_url(strategy, ctx=ctx)
+        response.set_cookie(
+            key=strategy.state_cookie_name,
+            value=state,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=600,
+        )
+        return SSOLoginResponse(
+            data=SSOAuthUrlResponse(url=url),
+            message="SSO authorization URL generated",
+            statusCode=200,
+        )
 
     @exception_handler
     async def google_callback(
         self,
         request: Request,
     ) -> RedirectResponse:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        provider = SSO_PROVIDERS.GOOGLE
+        ctx = SSOFactory.resolve_sso_context(provider)
+        strategy = SSOFactory.resolve_sso_strategy(provider)
+        login_response = await self.service.login_with_sso_callback(
+            strategy=strategy,
+            request=request,
+            ctx=ctx,
+        )
+        response = RedirectResponse(
+            url=settings.GOOGLE_FRONTEND_REDIRECT_URI,
+            status_code=302,
+        )
+        self._set_cookies_tokens(
+            response=response,
+            login_response=login_response,
+            is_save_session=True,
+        )
+        response.delete_cookie(strategy.state_cookie_name)
+        return response
 
     @exception_handler
     async def register_user(

@@ -54,3 +54,43 @@ class AuthRouter:
             summary="Logout user",
             description="Invalidate the access and refresh tokens.",
         )
+
+        self.router.add_api_route(
+            path="/sso",
+            endpoint=self.handler.get_sso_auth_url,
+            methods=["GET"],
+            response_model=SSOLoginResponse,
+            status_code=status.HTTP_200_OK,
+            summary="Get SSO sign-in URL",
+            description="Returns the SSO OAuth authorization URL. Frontend should redirect the user to this URL to start sign-in. A state cookie is set for validation at the callback.",
+            response_description="Object with url to redirect the user to.",
+            responses={
+                200: {
+                    "description": "SSO auth URL",
+                    "content": {
+                        "application/json": {
+                            "example": {
+                                "url": "https://accounts.google.com/o/oauth2/v2/auth?..."
+                            }
+                        }
+                    },
+                },
+                400: {
+                    "description": "SSO Sign-In not configured",
+                },
+            },
+        )
+
+        self.router.add_api_route(
+            path="/sso/callback",
+            endpoint=self.handler.google_callback,
+            methods=["GET"],
+            response_class=RedirectResponse,
+            status_code=status.HTTP_302_FOUND,
+            summary="SSO OAuth callback",
+            description="Called by Google after user signs in. Exchanges the code for tokens, creates session, redirects to the frontend URL.",
+            responses={
+                302: {"description": "Redirect to frontend with session cookies set"},
+                400: {"description": "Invalid state or token exchange failed"},
+            },
+        )

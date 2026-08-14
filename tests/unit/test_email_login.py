@@ -29,8 +29,8 @@ class UserRepositoryStub:
     def __init__(self, user: User | None) -> None:
         self.user = user
         self.queried_email: str | None = None
-        self.cached_token: str | None = None
-        self.cache_expire: int | None = None
+        self.cached_tokens: list[str] = []
+        self.cache_expirations: list[int] = []
 
     async def get(self, *, query: UserQuery, **kwargs) -> User | None:
         self.queried_email = query.email
@@ -39,8 +39,8 @@ class UserRepositoryStub:
     async def set_hashed_token(
         self, hashed_token: str, *, expire: int, **kwargs
     ) -> None:
-        self.cached_token = hashed_token
-        self.cache_expire = expire
+        self.cached_tokens.append(hashed_token)
+        self.cache_expirations.append(expire)
 
 
 class RegistryStub:
@@ -122,8 +122,9 @@ async def test_login_returns_tokens_with_credential_claims_and_caches_access_tok
         assert payload["active_group_id"] is None
         assert "exp_time" in payload
     assert refresh_payload["exp"] - access_payload["exp"] >= 470
-    assert user_repo.cached_token == sha256(response.access_token.encode()).hexdigest()
-    assert user_repo.cache_expire == 120
+    assert sha256(response.access_token.encode()).hexdigest() in user_repo.cached_tokens
+    assert sha256(response.refresh_token.encode()).hexdigest() in user_repo.cached_tokens
+    assert user_repo.cache_expirations == [120, 600]
 
 
 @pytest.mark.asyncio
