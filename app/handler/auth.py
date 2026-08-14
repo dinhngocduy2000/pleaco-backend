@@ -152,7 +152,34 @@ class AuthHandler:
         response: Response,
         refresh_token_request: RefreshTokenRequest,
     ) -> str:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        """
+        Refresh a token
+
+        Args:
+            refresh_token: User refresh token
+
+        Returns:
+            str: Success message
+        """
+        ctx = AppContext(trace_id=uuid4(), action=REFRESH_TOKEN)
+        logger.info(msg=f"Getting refresh token from cookies...", context=ctx)
+        refresh_token = request.cookies.get("refresh_token")
+        if refresh_token is None:
+            logger.error(msg=f"Refresh token not found in cookies...", context=ctx)
+            raise BadRequestException("Refresh  token is required")
+        logger.info(msg=f"Refresh token found, refreshing token...", context=ctx)
+        login_response = await self.service.refresh_token(
+            refresh_token=refresh_token, ctx=ctx
+        )
+        logger.info(
+            msg=f"Token refreshed successfully, setting cookies...", context=ctx
+        )
+        self._set_cookies_tokens(
+            response=response,
+            login_response=login_response,
+            is_save_session=refresh_token_request.is_save_session,
+        )
+        return "Success"
 
     @exception_handler
     async def get_current_user_profile(
@@ -160,7 +187,14 @@ class AuthHandler:
         request: Request,
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
     ) -> BaseResponse[UserInfo]:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        ctx = AppContext(trace_id=uuid4(), action=GET_CURRENT_USER_PROFILE)
+        logger.info(msg=f"Getting current user profile: {request.url}", context=ctx)
+        user_profile = await self.service.get_current_user(credential.id, ctx)
+        return BaseResponse(
+            data=user_profile,
+            message="Current user profile retrieved successfully",
+            statusCode=200,
+        )
 
     @exception_handler
     async def track_session(

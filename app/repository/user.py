@@ -1,4 +1,5 @@
 from typing import List, Optional
+from uuid import UUID as PythonUUID
 from sqlalchemy import UUID, Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,6 +92,43 @@ class UserRepository:
             raise e
 
     # ---------------- Redis ----------------
+
+    @staticmethod
+    def _user_profile_cache_key(user_id: PythonUUID) -> str:
+        return f"user-profile:{user_id}"
+
+    async def get_cached_user_profile(
+        self, user_id: PythonUUID, ctx: AppContext
+    ) -> UserInfo | None:
+        try:
+            cached_profile = await self._redis_client.get(
+                self._user_profile_cache_key(user_id)
+            )
+            if cached_profile is None:
+                return None
+            return UserInfo.model_validate_json(cached_profile)
+        except Exception as e:
+            logger.error(
+                msg=f"Get cached user profile repository: Exception: {e}",
+                context=ctx,
+            )
+            raise
+
+    async def set_cached_user_profile(
+        self, user_profile: UserInfo, ctx: AppContext
+    ) -> None:
+        try:
+            await self._redis_client.set(
+                self._user_profile_cache_key(user_profile.id),
+                user_profile.model_dump_json(),
+                expire=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
+            )
+        except Exception as e:
+            logger.error(
+                msg=f"Set cached user profile repository: Exception: {e}",
+                context=ctx,
+            )
+            raise
 
     async def set_hashed_token(
         self,

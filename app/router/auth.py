@@ -94,3 +94,66 @@ class AuthRouter:
                 400: {"description": "Invalid state or token exchange failed"},
             },
         )
+
+        self.router.add_api_route(
+            path="/refresh",
+            endpoint=self.handler.refresh_token,
+            methods=["POST"],
+            response_model=str,
+            status_code=status.HTTP_200_OK,
+            summary="Refresh a token",
+            description="Refresh a token. ",
+            response_description="The refreshed token information",
+            responses={
+                200: {
+                    "description": "Token refreshed successfully",
+                    "content": {
+                        "application/json": {
+                            "example": {"detail": "Successfully refreshed token"}
+                        }
+                    },
+                },
+                400: {
+                    "description": "Bad request - Invalid refresh token",
+                    "content": {
+                        "application/json": {
+                            "example": {"detail": "Invalid refresh token"}
+                        }
+                    },
+                },
+            },
+        )
+
+        self.router.add_api_route(
+            path="/profile",
+            endpoint=self.handler.get_current_user_profile,
+            methods=["GET"],
+            response_model=BaseResponse[UserInfo],
+            status_code=status.HTTP_200_OK,
+            summary="Get current user profile",
+            description="Get current user profile based on the user id in the credential",
+            response_description="The current user profile information",
+            responses={
+                200: {
+                    "description": "User profile retrieved successfully",
+                    "content": {
+                        "application/json": {
+                            "example": {
+                                "data": {
+                                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                                    "name": "John Doe",
+                                    "email": "john@example.com",
+                                    "status": "active",
+                                    "created_at": "2026-01-25T10:30:00Z",
+                                    "updated_at": "2026-01-25T10:30:00Z",
+                                    "image_url": None,
+                                    "active_group_id": "550e8400-e29b-41d4-a716-446655440000",
+                                },
+                                "message": "Success",
+                                "statusCode": 200,
+                            }
+                        }
+                    },
+                },
+            },
+        )

@@ -310,11 +310,103 @@ class AuthService:
     async def refresh_token(
         self, refresh_token: str, ctx: AppContext
     ) -> UserLoginResponse:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        async def _refresh_token(session: AsyncSession) -> UserLoginResponse:
+            logger.info(msg=f"Decoding refresh token...", context=ctx)
+            try:
+                token = jwt.decode(
+                    refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+                )
+                hashed_refresh_token = hashlib.sha256(
+                    refresh_token.encode("utf-8")
+                ).hexdigest()
+                cached_refresh_token = await self.repo.user_repo().get_token(
+                    hashed_refresh_token, ctx
+                )
+                if cached_refresh_token is None:
+                    logger.error(msg=f"Refresh token not found in cache", context=ctx)
+                    raise BadRequestException(message="Invalid refresh token")
+
+                if token["token_type"] != "refresh":
+                    logger.error(msg=f"Invalid token type", context=ctx)
+                    raise BadRequestException(message="Invalid token type")
+
+                user = await self.repo.user_repo().get(
+                    session=session, query=UserQuery(id=token["id"]), ctx=ctx
+                )
+                if user is None:
+                    logger.error(
+                        msg=f"User with id {token['id']} not found", context=ctx
+                    )
+                    raise BadRequestException(message="User not found")
+                if token["exp"] < datetime.now(timezone.utc).timestamp():
+                    logger.error(msg=f"Token expired", context=ctx)
+                    raise BadRequestException(message="Token expired")
+                logger.info(
+                    msg=f"Token decoded successfully, generating new tokens...",
+                    context=ctx,
+                )
+                return await self._generate_tokens(user, ctx)
+            except jwt.DecodeError as e:
+                logger.error(msg=f"Invalid refresh token: DecodeError", context=ctx)
+                raise BadRequestException(message="Invalid refresh token")
+            except jwt.ExpiredSignatureError as e:
+                logger.error(
+                    msg=f"Invalid refresh token: ExpiredSignatureError", context=ctx
+                )
+                raise BadRequestException(message="Token expired")
+            except jwt.InvalidTokenError as e:
+                logger.error(
+                    msg=f"Invalid refresh token: InvalidTokenError", context=ctx
+                )
+                raise BadRequestException(message="Invalid refresh token")
+            except jwt.InvalidSignatureError as e:
+                logger.error(
+                    msg=f"Invalid refresh token: InvalidSignatureError", context=ctx
+                )
+                raise BadRequestException(message="Invalid refresh token")
+            except jwt.InvalidAlgorithmError as e:
+                logger.error(
+                    msg=f"Invalid refresh token: InvalidAlgorithmError", context=ctx
+                )
+                raise BadRequestException(message="Invalid refresh token")
+            except jwt.InvalidKeyError as e:
+                logger.error(msg=f"Invalid refresh token: InvalidKeyError", context=ctx)
+                raise BadRequestException(message="Invalid refresh token")
+            except Exception as e:
+                logger.error(msg=f"Invalid refresh token: Exception: {e}", context=ctx)
+                raise e
+
+        return await self.repo.transaction_wrapper(_refresh_token)
 
     async def get_current_user(self, user_id: UUID, ctx: AppContext) -> UserInfo:
+        cached_profile = await self.repo.user_repo().get_cached_user_profile(
+            user_id, ctx
+        )
+        if cached_profile is not None:
+            return cached_profile
 
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        async def get_user_profile(session: AsyncSession) -> UserInfo:
+            user = await self.repo.user_repo().get(
+                session=session,
+                query=UserQuery(id=user_id),
+                ctx=ctx,
+            )
+            if user is None:
+                raise UnauthorizedException("User not found")
+            return UserInfo(
+                id=user.id,
+                name=user.name,
+                email=user.email,
+                status=user.status,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
+                image_url=user.image_url,
+                group_id=user.active_group_id,
+            )
+
+        user_profile = await self.repo.transaction_wrapper(get_user_profile)
+        await self.repo.user_repo().set_cached_user_profile(user_profile, ctx)
+        return user_profile
 
     async def logout(
         self, ctx: AppContext, response: Response, request: Request
