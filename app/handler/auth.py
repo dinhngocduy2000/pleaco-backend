@@ -138,7 +138,10 @@ class AuthHandler:
 
     @exception_handler
     async def logout(self, response: Response, request: Request) -> str:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        ctx = AppContext(trace_id=uuid4(), action=LOGOUT)
+        logger.info(msg=f"Starting logout endpoint: {request.url}", context=ctx)
+        await self.service.logout(ctx=ctx, response=response, request=request)
+        return "Success"
 
     @exception_handler
     async def validate_otp(

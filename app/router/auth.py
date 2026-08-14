@@ -44,3 +44,13 @@ class AuthRouter:
             summary="Validate an email verification OTP",
             description="Activate an inactive account after validating its OTP.",
         )
+
+        self.router.add_api_route(
+            "/logout",
+            self.handler.logout,
+            methods=["POST"],
+            response_model=str,
+            status_code=status.HTTP_200_OK,
+            summary="Logout user",
+            description="Invalidate the access and refresh tokens.",
+        )

@@ -248,4 +248,21 @@ class AuthService:
     async def logout(
         self, ctx: AppContext, response: Response, request: Request
     ) -> None:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        try:
+            access_token = request.cookies.get("access_token")
+            refresh_token = request.cookies.get("refresh_token")
+            hashed_access_token = hashlib.sha256(
+                access_token.encode("utf-8")
+            ).hexdigest()
+            hashed_refresh_token = hashlib.sha256(
+                refresh_token.encode("utf-8")
+            ).hexdigest()
+
+            await self.repo.user_repo().delete_token(hashed_access_token, ctx)
+            await self.repo.user_repo().delete_token(hashed_refresh_token, ctx)
+            response.delete_cookie("access_token")
+            response.delete_cookie("refresh_token")
+            return
+        except Exception as e:
+            logger.error(msg=f"Logout service: Exception: {e}", context=ctx)
+            raise e
