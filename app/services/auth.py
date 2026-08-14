@@ -44,7 +44,6 @@ class AuthService:
     user_service: UserService
     mail_service: MailService
     verification_topic: UserVerificationTopic
-    sso_strategy: BaseSSOStrategy | None
 
     def __init__(
         self,
@@ -57,28 +56,42 @@ class AuthService:
         self.user_service = user_service
         self.mail_service = mail_service
         self.verification_topic = verification_topic
-        self.sso_strategy = None
-
-    def set_sso_strategy(self, strategy: BaseSSOStrategy):
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
 
     def _validate_login_user(
         self, user: User, ctx: AppContext, login_request: UserLogin
     ) -> None:
-        if user.status != UserStatus.ACTIVE:
-            raise BadRequestException("Account is not active. Please verify your email.")
+        if user.status == UserStatus.INACTIVE or user.status == UserStatus.DELETED:
+            logger.error(
+                msg=f"Account is not active. Please verify your email. User status: {user.status}",
+                context=ctx,
+            )
+            raise BadRequestException(
+                "Account is not active. Please verify your email.")
 
         if not user.password:
+            logger.error(
+                msg="Account does not have a password set. Please use SSO login.",
+                context=ctx,
+            )
             raise BadRequestException("Incorrect password")
 
         try:
             password_is_valid = bcrypt.checkpw(
-                login_request.password.encode("utf-8"), user.password.encode("utf-8")
+                login_request.password.encode(
+                    "utf-8"), user.password.encode("utf-8")
             )
-        except ValueError:
+        except ValueError as e:
+            logger.error(
+                msg=f"Error while checking password.  Error: {e}",
+                context=ctx,
+            )
             password_is_valid = False
 
         if not password_is_valid:
+            logger.error(
+                msg="Incorrect password. Please check your credentials.",
+                context=ctx,
+            )
             raise BadRequestException("Incorrect password")
 
     def _credential_payload(self, user: User, expires_in: int) -> dict:
@@ -95,20 +108,24 @@ class AuthService:
         return payload
 
     def _generate_access_token(self, user: User) -> str:
-        payload = self._credential_payload(user, settings.ACCESS_TOKEN_EXPIRE_SECONDS)
+        payload = self._credential_payload(
+            user, settings.ACCESS_TOKEN_EXPIRE_SECONDS)
         payload["token_type"] = "access"
         return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
     def _generate_refresh_token(self, user: User) -> str:
-        payload = self._credential_payload(user, settings.REFRESH_TOKEN_EXPIRE_SECONDS)
+        payload = self._credential_payload(
+            user, settings.REFRESH_TOKEN_EXPIRE_SECONDS)
         payload["token_type"] = "refresh"
         return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
     async def _generate_tokens(self, user: User, ctx: AppContext) -> UserLoginResponse:
         access_token = self._generate_access_token(user)
         refresh_token = self._generate_refresh_token(user)
-        hashed_access_token = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
-        hashed_refresh_token = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        hashed_access_token = hashlib.sha256(
+            access_token.encode("utf-8")).hexdigest()
+        hashed_refresh_token = hashlib.sha256(
+            refresh_token.encode("utf-8")).hexdigest()
         await asyncio.gather(
             self.repo.user_repo().set_hashed_token(
                 hashed_access_token, ctx, expire=settings.ACCESS_TOKEN_EXPIRE_SECONDS
@@ -136,7 +153,8 @@ class AuthService:
             ctx=ctx,
         )
         if existing_user is not None:
-            raise BadRequestException("An account with this email already exists")
+            raise BadRequestException(
+                "An account with this email already exists")
         return existing_user
 
     async def _send_otp_mail(self, user: User, ctx: AppContext) -> None:
@@ -191,24 +209,76 @@ class AuthService:
             )
             if user is None:
                 raise BadRequestException("Account does not exist")
-            self._validate_login_user(user, ctx=ctx, login_request=login_request)
+            self._validate_login_user(
+                user, ctx=ctx, login_request=login_request)
+            if user.status == UserStatus.PENDING:
+                await self.repo.user_repo().update_user(
+                    session=session,
+                    user_id=user.id,
+                    user_update=UserUpdate(status=UserStatus.ACTIVE),
+                    ctx=ctx,
+                )
             return user
 
         user = await self.repo.transaction_wrapper(authenticate)
         return await self._generate_tokens(user, ctx=ctx)
 
-    def get_sso_auth_url(self, ctx: AppContext) -> Tuple[str, str]:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+    def get_sso_auth_url(
+        self, strategy: BaseSSOStrategy, ctx: AppContext
+    ) -> Tuple[str, str]:
+        return strategy.get_auth_url(ctx)
 
     async def _login_response_from_sso_idinfo(
         self, idinfo: dict, ctx: AppContext
     ) -> UserLoginResponse:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        email = idinfo.get("email")
+        if not isinstance(email, str) or not email:
+            raise BadRequestException("Google account email is required")
+
+        normalized_email = email.lower()
+        profile_name = idinfo.get("name")
+        name = profile_name.strip() if isinstance(profile_name, str) else ""
+        name = (name or normalized_email.split("@", maxsplit=1)[0])[:50]
+        picture = idinfo.get("picture")
+        image_url = picture[:255] if isinstance(picture, str) else None
+
+        async def provision_user(session: AsyncSession) -> User:
+            user = await self.repo.user_repo().get(
+                session=session,
+                query=UserQuery(email=normalized_email),
+                ctx=ctx,
+            )
+            if user is None:
+                user = User(
+                    name=name,
+                    email=normalized_email,
+                    password=None,
+                    image_url=image_url,
+                    status=UserStatus.PENDING,
+                )
+                return await self.repo.user_repo().save_user(session, user)
+
+            if user.status in (UserStatus.INACTIVE, UserStatus.PENDING):
+                await self.repo.user_repo().update_user(
+                    session=session,
+                    user_id=user.id,
+                    user_update=UserUpdate(status=UserStatus.ACTIVE),
+                    ctx=ctx,
+                )
+                user.status = UserStatus.ACTIVE
+            return user
+
+        user = await self.repo.transaction_wrapper(provision_user)
+        return await self._generate_tokens(user, ctx=ctx)
 
     async def login_with_sso_callback(
-        self, request: Request, ctx: AppContext
+        self,
+        strategy: BaseSSOStrategy,
+        request: Request,
+        ctx: AppContext,
     ) -> UserLoginResponse:
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        idinfo = await strategy.callback(request, ctx)
+        return await self._login_response_from_sso_idinfo(idinfo, ctx)
 
     async def validate_otp(
         self, otp_request: ValidateOTPRequest, ctx: AppContext
@@ -225,11 +295,12 @@ class AuthService:
                 ctx=ctx,
             )
             if user is None or user.status != UserStatus.INACTIVE:
-                raise BadRequestException("Invalid or expired verification code")
+                raise BadRequestException(
+                    "Invalid or expired verification code")
             await self.repo.user_repo().update_user(
                 session=session,
                 user_id=user.id,
-                user_update=UserUpdate(status=UserStatus.ACTIVE),
+                user_update=UserUpdate(status=UserStatus.PENDING),
                 ctx=ctx,
             )
 

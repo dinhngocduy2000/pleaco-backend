@@ -1,6 +1,6 @@
 import secrets
-from typing import Optional, Tuple
-import urllib
+from typing import Any, Tuple
+from urllib.parse import urlencode
 from fastapi import Request
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
@@ -15,6 +15,7 @@ logger = Logger()
 
 
 class GoogleSSOStrategy(BaseSSOStrategy):
+    state_cookie_name = "google_oauth_state"
 
     def get_auth_url(self, ctx: AppContext) -> Tuple[str, str]:
         """
@@ -37,12 +38,10 @@ class GoogleSSOStrategy(BaseSSOStrategy):
             "access_type": "offline",
             "prompt": "consent",
         }
-        url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(
-            params
-        )
+        url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
         return url, state
 
-    async def callback(self, request: Request, ctx: AppContext) -> Optional[dict]:
+    async def callback(self, request: Request, ctx: AppContext) -> dict[str, Any]:
         """
         Exchange Google authorization code for tokens, then get or create user and return our JWTs.
         Validates state against the cookie set when the auth URL was requested.
@@ -60,14 +59,16 @@ class GoogleSSOStrategy(BaseSSOStrategy):
             )
             raise BadRequestException(message="Google Sign-In is not configured")
 
-        state_cookie = request.cookies.get("google_oauth_state")
-        query_params = request.query_params._dict
-        state = query_params.get("state")
-        code = query_params.get("code")
+        state_cookie = request.cookies.get(self.state_cookie_name)
+        state = request.query_params.get("state")
+        code = request.query_params.get("code")
 
-        if not state or state != state_cookie:
+        if not state or not state_cookie or not secrets.compare_digest(state, state_cookie):
             logger.error(msg="Invalid or missing state in Google callback", context=ctx)
             raise BadRequestException(message="Invalid state")
+        if not code:
+            logger.error(msg="Missing authorization code in Google callback", context=ctx)
+            raise BadRequestException(message="Google sign-in failed")
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -83,7 +84,7 @@ class GoogleSSOStrategy(BaseSSOStrategy):
             )
         if resp.status_code != 200:
             logger.error(
-                msg=f"Google token exchange failed: {resp.status_code} {resp.text}",
+                msg=f"Google token exchange failed with status {resp.status_code}",
                 context=ctx,
             )
             raise BadRequestException(message="Google sign-in failed")
@@ -94,17 +95,20 @@ class GoogleSSOStrategy(BaseSSOStrategy):
             logger.error(msg="Google response missing id_token", context=ctx)
             raise BadRequestException(message="Google sign-in failed")
 
-        idinfo = None
         try:
             idinfo = google_id_token.verify_oauth2_token(
                 id_token_str,
                 google_requests.Request(),
                 settings.GOOGLE_CLIENT_ID,
             )
-        except ValueError as e:
+        except ValueError:
             logger.error(
-                msg=f"Invalid Google ID token from callback: {e}",
+                msg="Invalid Google ID token from callback",
                 context=ctx,
             )
-            raise Exception(message="Invalid Google credential")
+            raise BadRequestException(message="Google sign-in failed")
+
+        if not idinfo.get("email") or idinfo.get("email_verified") is not True:
+            logger.error(msg="Google account email is not verified", context=ctx)
+            raise BadRequestException(message="Google account email is not verified")
         return idinfo

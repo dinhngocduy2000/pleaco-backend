@@ -20,6 +20,9 @@ def test_login_route_is_registered_with_its_response_model() -> None:
         authenticate_user=_login_endpoint,
         register_user=_login_endpoint,
         validate_otp=_login_endpoint,
+        logout=_login_endpoint,
+        get_sso_auth_url=_login_endpoint,
+        google_callback=_login_endpoint,
     )
     router = AuthRouter(handler=handler)  # type: ignore[arg-type]
     login_route = next(route for route in router.router.routes if route.path == "/login")
