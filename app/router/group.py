@@ -17,7 +17,7 @@ class GroupRouter:
             path="/create",
             endpoint=self.handler.create_group,
             methods=["POST"],
-            response_model=GroupInfo,
+            response_model=BaseResponse[GroupInfo],
             status_code=status.HTTP_201_CREATED,
             summary="Create a new group",
             description="Create a new group with name, description, and members",

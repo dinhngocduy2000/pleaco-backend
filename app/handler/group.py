@@ -41,8 +41,13 @@ class GroupHandler:
             GroupInfo: Created group information
         """
         ctx = AppContext(trace_id=uuid4(), action=CREATE_GROUP)
-        return await self.service.create_group(
+        group = await self.service.create_group(
             group_create, credential=credential, ctx=ctx
+        )
+        return BaseResponse[GroupInfo](
+            data=group,
+            message="Success",
+            statusCode=201,
         )
 
     @exception_handler
