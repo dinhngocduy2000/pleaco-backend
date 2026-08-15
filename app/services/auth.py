@@ -395,7 +395,7 @@ class AuthService:
                     email=normalized_email,
                     password=None,
                     image_url=image_url,
-                    status=UserStatus.PENDING,
+                    status=UserStatus.ACTIVE,
                 )
                 return await self.repo.user_repo().save_user(session, user)
 
