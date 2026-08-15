@@ -1,4 +1,3 @@
-import asyncio
 from typing import Dict, List, Optional
 from uuid import UUID
 from app.common.context import AppContext
@@ -87,18 +86,6 @@ class GroupService:
                     logger.error(msg=f"Group's name is required", context=ctx)
                     raise BadRequestException(
                         message="Group's name is required")
-
-                group_same_name = await self.repo.group_repo().get_group(
-                    session=session, query=GroupQuery(name=group_create.name), ctx=ctx
-                )
-                if group_same_name is not None:
-                    logger.error(
-                        msg=f"Group with name {group_create.name} already exists",
-                        context=ctx,
-                    )
-                    raise BadRequestException(
-                        message="Group with that name already exists"
-                    )
 
                 group_create_domain = GroupCreateDomain(
                     name=group_create.name,
