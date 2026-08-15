@@ -157,3 +157,14 @@ class AuthRouter:
                 },
             },
         )
+
+        self.router.add_api_route(
+            path="/track",
+            endpoint=self.handler.track_session,
+            methods=["GET"],
+            response_model=str,
+            status_code=status.HTTP_200_OK,
+            summary="Track session",
+            description="Track session based on the credential",
+            response_description="The tracked session information",
+        )

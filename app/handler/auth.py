@@ -137,7 +137,8 @@ class AuthHandler:
         self, request: Request, user_create: UserCreate
     ) -> BaseResponse[str]:
         ctx = AppContext(trace_id=uuid4(), action=REGISTER_USER)
-        logger.info(msg=f"Starting registration endpoint: {request.url}", context=ctx)
+        logger.info(
+            msg=f"Starting registration endpoint: {request.url}", context=ctx)
         await self.service.create_user(user_create, ctx=ctx)
         return BaseResponse(
             data="Verification email queued",
@@ -165,9 +166,11 @@ class AuthHandler:
         logger.info(msg=f"Getting refresh token from cookies...", context=ctx)
         refresh_token = request.cookies.get("refresh_token")
         if refresh_token is None:
-            logger.error(msg=f"Refresh token not found in cookies...", context=ctx)
+            logger.error(
+                msg=f"Refresh token not found in cookies...", context=ctx)
             raise BadRequestException("Refresh  token is required")
-        logger.info(msg=f"Refresh token found, refreshing token...", context=ctx)
+        logger.info(
+            msg=f"Refresh token found, refreshing token...", context=ctx)
         login_response = await self.service.refresh_token(
             refresh_token=refresh_token, ctx=ctx
         )
@@ -188,7 +191,8 @@ class AuthHandler:
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
     ) -> BaseResponse[UserInfo]:
         ctx = AppContext(trace_id=uuid4(), action=GET_CURRENT_USER_PROFILE)
-        logger.info(msg=f"Getting current user profile: {request.url}", context=ctx)
+        logger.info(
+            msg=f"Getting current user profile: {request.url}", context=ctx)
         user_profile = await self.service.get_current_user(
             credential.id, ctx
         )
@@ -203,12 +207,26 @@ class AuthHandler:
         self, credential: Credential = Depends(AuthMiddleware.auth_middleware)
     ) -> str:
 
-        raise NotImplementedError("Pleaco-specific implementation is pending.")
+        ctx = AppContext(trace_id=uuid4(),
+                         action=TRACK_SESSION, actor=credential.id)
+        minutes_until_expiry = (
+            credential.exp_time - datetime.now(timezone.utc)
+        ).total_seconds() / 60
+        logger.info(
+            msg=f"current time: {datetime.now(timezone.utc)}", context=ctx)
+        logger.info(msg=f"exp time: {credential.exp_time}", context=ctx)
+        logger.info(
+            msg=f"Minutes until expiry: {minutes_until_expiry}", context=ctx)
+        if minutes_until_expiry < 15:
+            raise UnauthorizedException("Session expired")
+
+        return "Session is still valid"
 
     @exception_handler
     async def logout(self, response: Response, request: Request) -> str:
         ctx = AppContext(trace_id=uuid4(), action=LOGOUT)
-        logger.info(msg=f"Starting logout endpoint: {request.url}", context=ctx)
+        logger.info(
+            msg=f"Starting logout endpoint: {request.url}", context=ctx)
         await self.service.logout(ctx=ctx, response=response, request=request)
         return "Success"
 
@@ -217,7 +235,8 @@ class AuthHandler:
         self, request: Request, validate_otp_request: ValidateOTPRequest
     ) -> BaseResponse[str]:
         ctx = AppContext(trace_id=uuid4(), action=VALIDATE_OTP)
-        logger.info(msg=f"Starting OTP validation endpoint: {request.url}", context=ctx)
+        logger.info(
+            msg=f"Starting OTP validation endpoint: {request.url}", context=ctx)
         await self.service.validate_otp(validate_otp_request, ctx=ctx)
         return BaseResponse(
             data="Account verified",
