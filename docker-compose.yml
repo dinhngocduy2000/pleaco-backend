@@ -18,6 +18,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - pleaco-network
 
   redis:
     image: redis:7-alpine
@@ -36,6 +38,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - pleaco-network
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
@@ -49,6 +53,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - pleaco-network
 
   api:
     build: .
@@ -59,10 +65,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - REDIS_HOST=${REDIS_HOST}
-      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      - REDIS_HOST=redis
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
     depends_on:
       db:
         condition: service_healthy
@@ -72,8 +78,14 @@ services:
         condition: service_healthy
     env_file:
       - .env
+    networks:
+      - pleaco-network
 
 volumes:
   postgres_data:
   redis-data:
     driver: local
+
+networks:
+  pleaco-network:
+    driver: bridge
