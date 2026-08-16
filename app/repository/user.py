@@ -1,6 +1,6 @@
 from typing import List, Optional, Sequence
 from uuid import UUID as PythonUUID
-from sqlalchemy import UUID, Select, func, select, update
+from sqlalchemy import UUID, Select, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
@@ -10,10 +10,12 @@ from app.common.schemas.common import HashMapResponse
 from app.common.schemas.user import (
     UserInfo,
     UserJoinOption,
+    UserProfileGroupInfo,
     UserQuery,
     UserUpdate,
 )
 from app.external.redis.redis import RedisClient
+from app.models.group_members import GroupMembers
 from app.models.user import User
 from app.models.group import Group
 from app.core.config import settings
@@ -123,15 +125,22 @@ class UserRepository:
             )
             if include_group:
                 stmt = (
-                    select(User, Group)
+                    select(User, Group, GroupMembers)
                     .outerjoin(Group, User.active_group_id == Group.id)
+                    .outerjoin(
+                        GroupMembers,
+                        and_(
+                            GroupMembers.group_id == Group.id,
+                            GroupMembers.member_id == User.id,
+                        ),
+                    )
                     .where(User.id == user_id, User.status != UserStatus.DELETED)
                 )
                 result = await session.execute(stmt)
                 row = result.first()
                 if row is None:
                     return None
-                user, group = row
+                user, group, member = row
             else:
                 user = await self.get(
                     session=session,
@@ -153,7 +162,11 @@ class UserRepository:
                 image_url=user.image_url,
                 group_id=user.active_group_id,
                 group=(
-                    HashMapResponse(value=group.id, label=group.name)
+                    UserProfileGroupInfo(
+                        value=group.id,
+                        label=group.name,
+                        role=member.role if member is not None else None,
+                    )
                     if group is not None
                     else None
                 ),
