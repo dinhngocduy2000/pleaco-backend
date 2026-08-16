@@ -1,6 +1,6 @@
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from uuid import UUID as PythonUUID
-from sqlalchemy import UUID, Select, select, update
+from sqlalchemy import UUID, Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
@@ -92,6 +92,21 @@ class UserRepository:
         except Exception as e:
             logger.error(msg=f"Get user repository: Exception: {e}", context=ctx)
             raise e
+
+    async def get_by_emails(
+        self, session: AsyncSession, emails: Sequence[str], ctx: AppContext
+    ) -> List[User]:
+        """Return non-deleted users matching normalized email addresses."""
+        try:
+            if not emails:
+                return []
+            stmt = select(User).where(User.status != UserStatus.DELETED)
+            stmt = stmt.where(func.lower(User.email).in_(emails))
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+        except Exception as e:
+            logger.error(msg=f"Get users by emails repository: Exception: {e}", context=ctx)
+            raise
 
     async def get_user_profile(
         self,

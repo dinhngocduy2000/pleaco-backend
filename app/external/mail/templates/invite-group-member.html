@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Group invitation</title>
+    <style>
+      body { margin: 0; padding: 24px; background: #f5f5f5; color: #101727; font-family: Arial, sans-serif; }
+      .container { max-width: 600px; margin: 0 auto; padding: 36px; background: #ffffff; border-radius: 8px; text-align: center; }
+      .logo { max-height: 50px; margin-bottom: 24px; }
+      .button { display: inline-block; margin: 24px 0; padding: 12px 24px; background: #0066cc; color: #ffffff !important; border-radius: 6px; text-decoration: none; font-weight: bold; }
+      .details { padding: 16px; background: #f9f9f9; border-radius: 6px; text-align: left; }
+      .footer { margin-top: 24px; font-size: 12px; color: #666666; }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <img class="logo" src="{{ base_url.rstrip('/') }}/public/images/logo.png" alt="Pleaco" />
+      <h1>You are invited to join {{ group_name }}</h1>
+      <p>Hello {{ recipient_email }}, you have been added to <strong>{{ group_name }}</strong> as a <strong>{{ role }}</strong>.</p>
+      <a class="button" href="{{ accept_url }}">Accept invitation</a>
+      <div class="details">
+        <p><strong>Invitation ID:</strong> {{ invitation_id }}</p>
+        <p>Use the button above to continue to Pleaco.</p>
+      </div>
+      <p class="footer">© {{ year }} Pleaco</p>
+    </main>
+  </body>
+</html>

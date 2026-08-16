@@ -35,6 +35,10 @@ class RedisClient:
         async with Redis(connection_pool=self.pool) as client:
             await client.delete(key)
 
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        async with Redis(connection_pool=self.pool) as client:
+            return await client.eval(script, numkeys, *keys_and_args)
+
     async def decrease(self, key, amount=1):
         async with Redis(connection_pool=self.pool) as client:
             await client.decr(key, amount)

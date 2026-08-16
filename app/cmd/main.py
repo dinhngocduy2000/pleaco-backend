@@ -16,6 +16,7 @@ from app.core.database import create_pg_engine
 from app.external.mail.mail import MailService
 from app.external.queues.queue import RabbitMQClient
 from app.external.queues.topics.user_verification import UserVerificationTopic
+from app.external.queues.topics.add_group_member import AddGroupMemberTopic
 from app.external.redis.redis import RedisClient
 from app.handler.auth import AuthHandler
 from app.handler.group import GroupHandler
@@ -47,8 +48,12 @@ class App:
             # ------------ External Service ------------
             mail_service = MailService()
             verification_topic = UserVerificationTopic(rabbitmq_client, mail_service)
+            add_group_member_topic = AddGroupMemberTopic(rabbitmq_client, mail_service)
             await init_topics(
-                consumers={"verification-email": verification_topic.start_consumer}
+                consumers={
+                    "verification-email": verification_topic.start_consumer,
+                    "group-member-invitation-email": add_group_member_topic.start_consumer,
+                }
             )
 
             # ------------ Service ------------
@@ -60,7 +65,11 @@ class App:
                 verification_topic=verification_topic,
             )
             permission_service = PermissionService(repo=registry)
-            group_service = GroupService(repo=registry, permission_service=permission_service)
+            group_service = GroupService(
+                repo=registry,
+                permission_service=permission_service,
+                add_group_member_topic=add_group_member_topic,
+            )
             AuthMiddleware.init(auth_service=auth_service)
 
             # ------------ Handler ------------
