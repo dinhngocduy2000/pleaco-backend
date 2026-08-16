@@ -134,26 +134,26 @@ class GroupHandler:
         )
         return BaseResponse[List[GroupInvitationInfo]](
             data=invitations,
-            message="Members added; invitation delivery is being processed",
+            message="Invitations created; invitation delivery is being processed",
             statusCode=201,
         )
 
     @exception_handler
-    async def get_group_invitation(
+    async def validate_group_invitation(
         self,
         invitation_id: UUID = Path(..., description="Invitation id"),
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
-    ) -> BaseResponse[GroupInvitationInfo]:
+    ) -> BaseResponse[str]:
         ctx = AppContext(
             trace_id=uuid4(),
             action=VALIDATE_GROUP_INVITATION,
             actor=credential.id,
         )
-        invitation = await self.service.get_group_invitation(
+        result = await self.service.validate_group_invitation(
             invitation_id=invitation_id, credential=credential, ctx=ctx
         )
-        return BaseResponse[GroupInvitationInfo](
-            data=invitation,
-            message="Invitation retrieved",
+        return BaseResponse[str](
+            data=result,
+            message="Invitation accepted",
             statusCode=200,
         )

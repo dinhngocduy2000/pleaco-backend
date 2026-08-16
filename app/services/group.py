@@ -33,6 +33,7 @@ from app.models.group import Group
 from app.models.group_members import GroupMembers
 from app.models.user import User
 from app.repository.registry import Registry
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = Logger()
@@ -230,12 +231,12 @@ class GroupService:
         credential: Credential,
         ctx: AppContext,
     ) -> List[GroupInvitationInfo]:
-        """Add eligible users to a group and request invitation-email delivery.
+        """Create eligible users' invitations and request email delivery.
 
         Authorization is enforced by ``require_permission`` against ``group_id``.
-        All request validation and membership inserts occur before the transaction
-        commits. Redis invitation persistence and RabbitMQ publishing happen after
-        commit; their failures are logged without undoing valid memberships.
+        All request validation occurs before invitations are persisted. Membership
+        creation is deliberately deferred until the invited user validates their
+        invitation.
 
         Args:
             group_id: Group receiving the new memberships.
@@ -244,7 +245,7 @@ class GroupService:
             ctx: Request trace and authorization context.
 
         Returns:
-            Invitation metadata generated for every committed membership.
+            Invitation metadata generated for every validated recipient.
 
         Raises:
             BadRequestException: If the batch is empty, invalid, duplicated, has
@@ -256,7 +257,7 @@ class GroupService:
         if not members or len(members) == 0:
             raise BadRequestException(message="At least one member is required")
 
-        async def create_memberships(
+        async def validate_invitation_request(
             session: AsyncSession,
         ) -> List[GroupInvitationInfo]:
             group = await self._validate_group_exists(group_id, session, ctx)
@@ -288,31 +289,14 @@ class GroupService:
                 )
                 for member in members
             ]
-            group_members = [
-                GroupMembers(
-                    member_id=invitation.member_id,
-                    group_id=group_id,
-                    role=invitation.role,
-                )
-                for invitation in invitations
-            ]
-            await self.repo.group_members_repo().create(
-                session=session, group_members=group_members, ctx=ctx
-            )
-            await asyncio.gather(
-                *(
-                    self.repo.group_members_repo().set_group_member_redis(
-                        member=member, ctx=ctx
-                    )
-                    for member in group_members
-                )
-            )
             return invitations
 
-        invitations = await self.repo.transaction_wrapper(create_memberships)
+        invitations = await self.repo.transaction_wrapper(validate_invitation_request)
         for invitation in invitations:
             try:
-                await self.repo.group_invitation_repo().save(invitation, ctx)
+                await self.repo.group_invitation_repo().replace_pending_invitation(
+                    invitation, ctx
+                )
             except Exception:
                 logger.exception(
                     msg="Unable to store group invitation; email will not be queued",
@@ -334,13 +318,13 @@ class GroupService:
                 )
         return invitations
 
-    async def get_group_invitation(
+    async def validate_group_invitation(
         self, invitation_id: UUID, credential: Credential, ctx: AppContext
-    ) -> GroupInvitationInfo:
-        """Retrieve and consume an invitation belonging to the authenticated user.
+    ) -> str:
+        """Accept an invitation and create its membership from the Redis payload.
 
-        The invitation is deleted from Redis after its recipient successfully
-        retrieves it, so this currently behaves as a one-time validation step.
+        The stored invitation is trusted after recipient-email validation. Existing
+        memberships are treated as a successful idempotent acceptance.
 
         Args:
             invitation_id: Invitation identifier from the frontend route.
@@ -348,7 +332,7 @@ class GroupService:
             ctx: Request trace context for logging and Redis access.
 
         Returns:
-            The matching invitation metadata.
+            A confirmation message.
 
         Raises:
             NotFoundException: If the invitation is missing or expired.
@@ -369,8 +353,43 @@ class GroupService:
             )
             raise ForbiddenException(message="You cannot view this invitation")
 
-        await self.repo.group_invitation_repo().delete(invitation_id, ctx)
-        return invitation
+        async def create_membership(session: AsyncSession) -> GroupMembers | None:
+            existing_member = await self.repo.group_members_repo().get_group_member_by_id(
+                session=session,
+                member_id=invitation.member_id,
+                group_id=invitation.group_id,
+            )
+            if existing_member is not None:
+                return existing_member
+            member = GroupMembers(
+                member_id=invitation.member_id,
+                group_id=invitation.group_id,
+                role=invitation.role,
+            )
+            await self.repo.group_members_repo().create(
+                session=session, group_members=[member], ctx=ctx
+            )
+            return member
+
+        try:
+            group_member = await self.repo.transaction_wrapper(create_membership)
+        except IntegrityError:
+            async def get_existing_membership(session: AsyncSession) -> GroupMembers | None:
+                return await self.repo.group_members_repo().get_group_member_by_id(
+                    session=session,
+                    member_id=invitation.member_id,
+                    group_id=invitation.group_id,
+                )
+
+            group_member = await self.repo.transaction_wrapper(get_existing_membership)
+            if group_member is None:
+                raise
+
+        await self.repo.group_members_repo().set_group_member_redis(
+            member=group_member, ctx=ctx
+        )
+        await self.repo.group_invitation_repo().consume(invitation, ctx)
+        return "Invitation accepted"
 
     @staticmethod
     def _to_group_info(group: Group, members: List[User]) -> GroupInfo:

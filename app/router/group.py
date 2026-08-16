@@ -65,12 +65,12 @@ class GroupRouter:
 
         self.router.add_api_route(
             path="/validation/{invitation_id}",
-            endpoint=self.handler.get_group_invitation,
-            methods=["GET"],
-            response_model=BaseResponse[GroupInvitationInfo],
+            endpoint=self.handler.validate_group_invitation,
+            methods=["POST"],
+            response_model=BaseResponse[str],
             status_code=status.HTTP_200_OK,
-            summary="Get a group invitation",
-            description="Return a stored invitation for its invited authenticated user.",
+            summary="Accept a group invitation",
+            description="Create group membership for the invited authenticated user.",
         )
 
         self.router.add_api_route(
