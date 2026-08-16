@@ -4,6 +4,7 @@ from typing import List, Optional
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import BadRequestException
 from app.common.schemas.common import BaseResponse, HashMapResponse
@@ -16,13 +17,17 @@ class UserBase(BaseModel):
     status: str = Field("", description="User's status")
 
 
+class UserProfileGroupInfo(HashMapResponse):
+    role: Optional[GroupRole] = Field(None, description="User's role in the group")
+
+
 class UserInfo(UserBase):
     id: UUID = Field(None, description="User's id")
     created_at: datetime = Field(None, description="User's created at")
     updated_at: datetime = Field(None, description="User's updated at")
     image_url: Optional[str] = Field(None, description="User's image url")
     group_id: Optional[UUID] = Field(None, description="User's group id")
-    group: Optional[HashMapResponse] = Field(None, description="User's group")
+    group: Optional[UserProfileGroupInfo] = Field(None, description="User's group")
 
 
 class UserQuery(BaseModel):
@@ -76,6 +81,7 @@ class UserJoinOption(BaseModel):
         None, description="Whether to include groups in the response"
     )
 
+
 class UserCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -104,18 +110,19 @@ class UserCreate(BaseModel):
 
         return password
 
+
 class UserLogin(BaseModel):
     email: EmailStr = Field(..., description="User's email")
     password: str = Field(..., min_length=1, description="User's password")
-    is_save_session: bool = Field(
-        False, description="Whether to save the session"
-    )
+    is_save_session: bool = Field(False, description="Whether to save the session")
 
 
 class ValidateOTPRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    otp: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$", description="OTP")
+    otp: str = Field(
+        ..., min_length=6, max_length=6, pattern=r"^\d{6}$", description="OTP"
+    )
     email: EmailStr = Field(..., description="User's email")
 
 
