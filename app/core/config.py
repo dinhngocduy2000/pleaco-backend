@@ -27,6 +27,7 @@ class Settings(BaseAppSettings):
     DEBUG: bool = True
     ENVIRONMENT: str = "development"
     API_URL: str = "http://localhost:8000"
+    FRONTEND_URL: str = "http://localhost:3000"
     # Origin for absolute URLs in outbound email (images, links). Must be reachable from
     # the public internet (e.g. https://api.yourdomain.com). If unset, API_URL is used —
     # localhost will not work in Gmail because Google's image proxy cannot fetch it.
@@ -51,6 +52,7 @@ class Settings(BaseAppSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_USE_TLS: bool = True
     OTP_CODE_EXPIRE_SECONDS: int = 600  # 10 minutes
+    INVITATION_EXPIRE_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
 
     # Cache / Redis
     REDIS_HOST: str = "localhost"

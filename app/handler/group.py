@@ -1,18 +1,25 @@
 from typing import Dict, List
 from uuid import UUID, uuid4
-from fastapi import Depends, Path, Request
+from fastapi import Body, Depends, Path, Request
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_GROUP,
     GET_GROUP_BY_ID,
+    INVITE_MEMBER,
     LIST_GROUP_KEY_VALUE,
     SWITCH_CURRENT_USER_GROUP,
+    VALIDATE_GROUP_INVITATION,
 )
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.middleware.logger import Logger
 from app.common.schemas.common import BaseResponse, HashMapResponse
-from app.common.schemas.group import GroupCreateDTO, GroupInfo
+from app.common.schemas.group import (
+    GroupCreateDTO,
+    GroupInvitationInfo,
+    GroupInfo,
+    GroupMemberCreate,
+)
 from app.common.schemas.user import Credential, SwitchGroupRequest
 from app.services.group import GroupService
 
@@ -110,3 +117,43 @@ class GroupHandler:
             context=ctx,
         )
         return "Success"
+
+    @exception_handler
+    async def invite_group_members(
+        self,
+        group_id: UUID = Path(..., description="Group id"),
+        members: List[GroupMemberCreate] = Body(...),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[List[GroupInvitationInfo]]:
+        ctx = AppContext(trace_id=uuid4(), action=INVITE_MEMBER, actor=credential.id)
+        invitations = await self.service.invite_group_members(
+            group_id=group_id,
+            members=members,
+            credential=credential,
+            ctx=ctx,
+        )
+        return BaseResponse[List[GroupInvitationInfo]](
+            data=invitations,
+            message="Members added; invitation delivery is being processed",
+            statusCode=201,
+        )
+
+    @exception_handler
+    async def get_group_invitation(
+        self,
+        invitation_id: UUID = Path(..., description="Invitation id"),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[GroupInvitationInfo]:
+        ctx = AppContext(
+            trace_id=uuid4(),
+            action=VALIDATE_GROUP_INVITATION,
+            actor=credential.id,
+        )
+        invitation = await self.service.get_group_invitation(
+            invitation_id=invitation_id, credential=credential, ctx=ctx
+        )
+        return BaseResponse[GroupInvitationInfo](
+            data=invitation,
+            message="Invitation retrieved",
+            statusCode=200,
+        )

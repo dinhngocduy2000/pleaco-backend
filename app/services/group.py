@@ -1,19 +1,34 @@
 import asyncio
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from app.common.context import AppContext
 from app.common.enum.user_roles import GroupRole
-from app.common.exceptions import BadRequestException
+from app.common.enum.user_status import UserStatus
+from app.common.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from app.common.middleware.logger import Logger
 from app.common.schemas.common import HashMapResponse
 from app.common.schemas.group import (
     GroupCreateDTO,
     GroupCreateDomain,
+    GroupInvitationInfo,
     GroupInfo,
+    GroupMemberCreate,
     GroupQuery,
 )
 from app.common.schemas.user import Credential, SwitchGroupRequest, UserInfo, UserUpdate
 from app.core.rbac.permissions import PermissionService
+from app.core.rbac.role_validation import require_permission
+from app.core.config import settings
+from app.external.queues.topics.add_group_member import (
+    AddGroupMemberMessage,
+    AddGroupMemberTopic,
+)
 from app.models.group import Group
 from app.models.group_members import GroupMembers
 from app.models.user import User
@@ -26,10 +41,203 @@ logger = Logger()
 class GroupService:
     repo: Registry
     permission_service: PermissionService
+    add_group_member_topic: AddGroupMemberTopic
 
-    def __init__(self, repo: Registry, permission_service: PermissionService) -> None:
+    def __init__(
+        self,
+        repo: Registry,
+        permission_service: PermissionService,
+        add_group_member_topic: AddGroupMemberTopic,
+    ) -> None:
         self.repo = repo
         self.permission_service = permission_service
+        self.add_group_member_topic = add_group_member_topic
+
+    async def _validate_group_exists(
+        self, group_id: UUID, session: AsyncSession, ctx: AppContext
+    ) -> Group:
+        group = await self.repo.group_repo().get_group(
+            session=session, query=GroupQuery(id=group_id), ctx=ctx
+        )
+        if group is None:
+            raise NotFoundException(message="Group not found")
+        return group
+
+    @staticmethod
+    def _validate_member_roles(
+        members: List[GroupMemberCreate], ctx: AppContext
+    ) -> None:
+        allowed_roles = {GroupRole.MEMBER, GroupRole.MODERATOR, GroupRole.GUEST}
+        invalid_roles = {member.role for member in members} - allowed_roles
+        if invalid_roles:
+            logger.error(msg=f"Invalid member roles: {invalid_roles}", context=ctx)
+            raise BadRequestException(
+                message="Only member, moderator, and guest roles can be invited"
+            )
+
+    @staticmethod
+    def _validate_unique_request_emails(
+        members: List[GroupMemberCreate], ctx: AppContext
+    ) -> List[str]:
+        emails = [str(member.email).lower() for member in members]
+        if len(emails) != len(set(emails)):
+            logger.error(msg="Duplicate member emails are not allowed", context=ctx)
+            raise BadRequestException(
+                message="Some of the invited emails are duplicated"
+            )
+        return emails
+
+    async def _get_invited_users_by_email(
+        self,
+        members: List[GroupMemberCreate],
+        session: AsyncSession,
+        ctx: AppContext,
+    ) -> Dict[str, User]:
+        emails = [str(member.email).lower() for member in members]
+        users = await self.repo.user_repo().get_by_emails(
+            session=session, emails=emails, ctx=ctx
+        )
+        return {user.email.lower(): user for user in users}
+
+    @staticmethod
+    def _validate_users_found(
+        users_by_email: Dict[str, User], requested_emails: List[str], ctx: AppContext
+    ) -> None:
+        missing_emails = set(requested_emails) - set(users_by_email)
+        if missing_emails:
+            raise BadRequestException(message="One or more invited users do not exist")
+
+    @staticmethod
+    def _validate_invitable_user_statuses(
+        users_by_email: Dict[str, User], ctx: AppContext
+    ) -> None:
+        allowed_statuses = {UserStatus.ACTIVE, UserStatus.PENDING}
+        if any(user.status not in allowed_statuses for user in users_by_email.values()):
+            raise BadRequestException(
+                message="Invited users must have ACTIVE or PENDING status"
+            )
+
+    async def _validate_users_not_already_group_members(
+        self,
+        group_id: UUID,
+        users: List[User],
+        session: AsyncSession,
+        ctx: AppContext,
+    ) -> None:
+        existing_member_ids = (
+            await self.repo.group_members_repo().list_existing_member_ids(
+                session=session,
+                group_id=group_id,
+                member_ids=[user.id for user in users],
+                ctx=ctx,
+            )
+        )
+        if existing_member_ids:
+            raise BadRequestException(
+                message="One or more invited users are already group members"
+            )
+
+    @require_permission(GroupRole.ADMIN)
+    async def invite_group_members(
+        self,
+        group_id: UUID,
+        members: List[GroupMemberCreate],
+        credential: Credential,
+        ctx: AppContext,
+    ) -> List[GroupInvitationInfo]:
+        """Add valid users to a group and enqueue their invitation emails."""
+        if not members or len(members) == 0:
+            raise BadRequestException(message="At least one member is required")
+
+        async def create_memberships(
+            session: AsyncSession,
+        ) -> List[GroupInvitationInfo]:
+            group = await self._validate_group_exists(group_id, session, ctx)
+            self._validate_member_roles(members, ctx)
+            requested_emails = self._validate_unique_request_emails(members, ctx)
+            users_by_email = await self._get_invited_users_by_email(
+                members, session, ctx
+            )
+            self._validate_users_found(users_by_email, requested_emails, ctx)
+            self._validate_invitable_user_statuses(users_by_email, ctx)
+            users = [users_by_email[email] for email in requested_emails]
+            await self._validate_users_not_already_group_members(
+                group_id, users, session, ctx
+            )
+
+            now = datetime.now(timezone.utc)
+            expires_at = now + timedelta(seconds=settings.INVITATION_EXPIRE_SECONDS)
+            invitations = [
+                GroupInvitationInfo(
+                    invitation_id=uuid4(),
+                    group_id=group_id,
+                    member_id=users_by_email[str(member.email).lower()].id,
+                    email=str(member.email).lower(),
+                    role=member.role,
+                    group_name=group.name,
+                    invited_by=credential.id,
+                    created_at=now,
+                    expires_at=expires_at,
+                )
+                for member in members
+            ]
+            group_members = [
+                GroupMembers(
+                    member_id=invitation.member_id,
+                    group_id=group_id,
+                    role=invitation.role,
+                )
+                for invitation in invitations
+            ]
+            await self.repo.group_members_repo().create(
+                session=session, group_members=group_members, ctx=ctx
+            )
+            await asyncio.gather(
+                *(
+                    self.repo.group_members_repo().set_group_member_redis(
+                        member=member, ctx=ctx
+                    )
+                    for member in group_members
+                )
+            )
+            return invitations
+
+        invitations = await self.repo.transaction_wrapper(create_memberships)
+        for invitation in invitations:
+            try:
+                await self.repo.group_invitation_repo().save(invitation, ctx)
+            except Exception:
+                logger.exception(
+                    msg="Unable to store group invitation; email will not be queued",
+                    context=ctx,
+                )
+                continue
+            try:
+                await self.add_group_member_topic.publish_invitation(
+                    AddGroupMemberMessage(
+                        invitation_id=invitation.invitation_id,
+                        email=invitation.email,
+                        group_name=invitation.group_name,
+                        role=invitation.role,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    msg="Unable to queue group invitation email", context=ctx
+                )
+        return invitations
+
+    async def get_group_invitation(
+        self, invitation_id: UUID, credential: Credential, ctx: AppContext
+    ) -> GroupInvitationInfo:
+        invitation = await self.repo.group_invitation_repo().get(invitation_id, ctx)
+        if invitation is None:
+            raise NotFoundException(message="Invitation not found or expired")
+        if not secrets.compare_digest(
+            str(invitation.email).lower(), credential.email.lower()
+        ):
+            raise ForbiddenException(message="You cannot view this invitation")
+        return invitation
 
     @staticmethod
     def _to_group_info(group: Group, members: List[User]) -> GroupInfo:
@@ -94,8 +302,7 @@ class GroupService:
             try:
                 if group_create.name is None:
                     logger.error(msg=f"Group's name is required", context=ctx)
-                    raise BadRequestException(
-                        message="Group's name is required")
+                    raise BadRequestException(message="Group's name is required")
 
                 group_create_domain = GroupCreateDomain(
                     name=group_create.name,
@@ -175,22 +382,19 @@ class GroupService:
                     ctx=ctx,
                 )
                 if group is None:
-                    logger.error(
-                        msg=f"Group with id {group_id} not found", context=ctx)
+                    logger.error(msg=f"Group with id {group_id} not found", context=ctx)
                     raise BadRequestException(message="Group not found")
                 members = await self.repo.group_repo().list_member_users(
                     session=session, group_id=group.id, ctx=ctx
                 )
                 if credential.id not in {member.id for member in members}:
-                    logger.error(
-                        msg=f"User is not a member of the group", context=ctx)
+                    logger.error(msg=f"User is not a member of the group", context=ctx)
                     raise BadRequestException(
                         message="User is not a member of the group"
                     )
                 return self._to_group_info(group, members)
             except Exception as e:
-                logger.error(
-                    msg=f"Get group service: Exception: {e}", context=ctx)
+                logger.error(msg=f"Get group service: Exception: {e}", context=ctx)
                 raise e
 
         return await self.repo.transaction_wrapper(_get_group)
@@ -217,8 +421,7 @@ class GroupService:
                     session=session, group_id=group.id, ctx=ctx
                 )
                 if credential.id not in {member.id for member in members}:
-                    logger.error(
-                        msg=f"User is not a member of the group", context=ctx)
+                    logger.error(msg=f"User is not a member of the group", context=ctx)
                     raise BadRequestException(
                         message="User is not a member of the group"
                     )
@@ -231,8 +434,7 @@ class GroupService:
                 )
                 return
             except Exception as e:
-                logger.error(
-                    msg=f"Switch group service: Exception: {e}", context=ctx)
+                logger.error(msg=f"Switch group service: Exception: {e}", context=ctx)
                 raise e
 
         return await self.repo.transaction_wrapper(_switch_current_user_active_group)

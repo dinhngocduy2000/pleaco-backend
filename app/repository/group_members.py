@@ -1,5 +1,5 @@
 import datetime
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import select
@@ -47,6 +47,30 @@ class GroupMembersRepository:
         except Exception as e:
             logger.error(f"Error in getting group members: {e}")
             raise e
+
+    async def list_existing_member_ids(
+        self,
+        session: AsyncSession,
+        group_id: UUID,
+        member_ids: Sequence[UUID],
+        ctx: AppContext,
+    ) -> set[UUID]:
+        """Return requested users that are already members of ``group_id``."""
+        try:
+            if not member_ids:
+                return set()
+            stmt = select(GroupMembers.member_id).where(
+                GroupMembers.group_id == group_id,
+                GroupMembers.member_id.in_(member_ids),
+            )
+            result = await session.execute(stmt)
+            return set(result.scalars().all())
+        except Exception as e:
+            logger.error(
+                msg=f"List existing group members repository: Exception: {e}",
+                context=ctx,
+            )
+            raise
 
     # ------------ Redis ---------------
     async def set_group_member_redis(self, member: GroupMembers, ctx: AppContext) -> None:

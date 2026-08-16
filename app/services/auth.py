@@ -258,13 +258,14 @@ class AuthService:
         await self.repo.user_repo().set_otp_code(user.email, otp, ctx=ctx)
         try:
             await self.verification_topic.publish_verification_email(user.email, otp)
-        except Exception:
+        except Exception as e:
             # Registration is deliberately accepted after persistence. A repeat request for
             # an inactive account regenerates and requeues the verification email.
             logger.exception(
                 msg="Unable to queue verification email; registration can be retried",
                 context=ctx,
             )
+            raise e
 
     async def create_user(self, user_create: UserCreate, ctx: AppContext) -> None:
         """Create an inactive local account and start email verification.

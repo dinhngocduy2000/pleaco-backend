@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.common.enum.user_roles import GroupRole
 
@@ -55,5 +55,19 @@ class GroupMemberInfo(BaseModel):
 
 
 class GroupMemberCreate(BaseModel):
-    member_id: UUID = Field(None, description="Group member's id")
-    group_id: UUID = Field(None, description="Group's id")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    email: EmailStr = Field(..., description="Existing member's email")
+    role: GroupRole = Field(..., description="Role assigned in the group")
+
+
+class GroupInvitationInfo(BaseModel):
+    invitation_id: UUID = Field(..., description="Invitation id")
+    group_id: UUID = Field(..., description="Group id")
+    member_id: UUID = Field(..., description="Invited member id")
+    email: EmailStr = Field(..., description="Invited member email")
+    role: GroupRole = Field(..., description="Invited group role")
+    group_name: str = Field(..., description="Group name")
+    invited_by: UUID = Field(..., description="User who sent the invitation")
+    created_at: datetime = Field(..., description="Invitation creation time")
+    expires_at: datetime = Field(..., description="Invitation expiration time")

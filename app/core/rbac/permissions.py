@@ -1,4 +1,5 @@
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
@@ -24,6 +25,7 @@ from app.common.schemas.user import Credential
 from app.repository.registry import Registry
 
 ROLE_HIERACHY = [
+    GroupRole.GUEST,
     GroupRole.MEMBER,
     GroupRole.MODERATOR,
     GroupRole.ADMIN,
@@ -132,14 +134,22 @@ class PermissionService:
         self.repo = repo
 
     async def get_group_member(
-        self, credential: Credential, ctx: AppContext
+        self,
+        credential: Credential,
+        ctx: AppContext,
+        group_id: UUID | None = None,
     ) -> Optional[GroupMemberInfo]:
         async def _get_group_member(session: AsyncSession) -> GroupMemberInfo:
             try:
+                target_group_id = group_id or credential.active_group_id
+                if target_group_id is None:
+                    raise ForbiddenException(message="A group must be selected")
                 member_info: GroupMemberInfo | None = None
                 cached_member = (
                     await self.repo.group_members_repo().get_group_member_redis(
-                        group_id=credential.active_group_id, member_id=credential.id
+                        group_id=target_group_id,
+                        member_id=credential.id,
+                        ctx=ctx,
                     )
                 )
 
@@ -148,7 +158,7 @@ class PermissionService:
                         await self.repo.group_members_repo().get_group_member_by_id(
                             session=session,
                             member_id=credential.id,
-                            group_id=credential.active_group_id,
+                            group_id=target_group_id,
                         )
                     )
                     if member is None:
@@ -158,12 +168,12 @@ class PermissionService:
                         raise ForbiddenException(
                             message="This user is not found in the current group"
                         )
-                    member_info =GroupMemberInfo(
+                    member_info = GroupMemberInfo(
                         created_at=member.created_at,
                         updated_at=member.updated_at,
-                        member_id=str(member.member_id),
-                        group_id=str(member.group_id),
-                        role=member.role.value,
+                        member_id=member.member_id,
+                        group_id=member.group_id,
+                        role=member.role,
                     )
                     await self.repo.group_members_repo().set_group_member_redis(
                         member=member, ctx=ctx
@@ -174,15 +184,17 @@ class PermissionService:
                         updated_at=cached_member["updated_at"],
                         member_id=cached_member["member_id"],
                         group_id=cached_member["group_id"],
-                        role=cached_member["role"],
+                        role=GroupRole(cached_member["role"]),
                     )
 
                 return member_info
 
             except Exception as e:
                 logger.error(
-                    msg=f"Error getting group member when validating role: {e}"
+                    msg=f"Error getting group member when validating role: {e}",
+                    context=ctx,
                 )
+                raise
 
         return await self.repo.transaction_wrapper(_get_group_member)
 

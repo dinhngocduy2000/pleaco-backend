@@ -23,10 +23,11 @@ def require_permission(
             ctx: AppContext = kwargs.get("ctx")
             action = ctx.action
             credential: Credential = kwargs.get("credential")
+            group_id: UUID | None = kwargs.get("group_id")
 
             permission_service: PermissionService = self.permission_service
             group_member = await permission_service.get_group_member(
-                credential=credential, ctx=ctx
+                credential=credential, ctx=ctx, group_id=group_id
             )
             if group_member is None:
                 logger.error(
@@ -49,7 +50,7 @@ def require_permission(
                 )
 
             if not permission_service.is_action_executable(
-                role=minimum_role,
+                role=group_member.role,
                 action=action,
                 is_owner=credential.id == resouce_owner_id,
             ):

@@ -1,7 +1,7 @@
 from typing import List
 from fastapi import APIRouter, status
 from app.common.schemas.common import BaseResponse, HashMapResponse
-from app.common.schemas.group import GroupInfo
+from app.common.schemas.group import GroupInvitationInfo, GroupInfo
 from app.handler.group import GroupHandler
 
 
@@ -51,6 +51,26 @@ class GroupRouter:
                     },
                 },
             },
+        )
+
+        self.router.add_api_route(
+            path="/{group_id}/members",
+            endpoint=self.handler.invite_group_members,
+            methods=["POST"],
+            response_model=BaseResponse[List[GroupInvitationInfo]],
+            status_code=status.HTTP_201_CREATED,
+            summary="Invite members to a group",
+            description="Add existing active or pending users and queue group invitation emails.",
+        )
+
+        self.router.add_api_route(
+            path="/validation/{invitation_id}",
+            endpoint=self.handler.get_group_invitation,
+            methods=["GET"],
+            response_model=BaseResponse[GroupInvitationInfo],
+            status_code=status.HTTP_200_OK,
+            summary="Get a group invitation",
+            description="Return a stored invitation for its invited authenticated user.",
         )
 
         self.router.add_api_route(
