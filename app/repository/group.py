@@ -81,11 +81,15 @@ class GroupRepository:
             raise e
 
     async def list_groups(
-        self, session: AsyncSession, query: GroupQuery, ctx: AppContext
+        self,
+        session: AsyncSession,
+        query: GroupQuery,
+        ctx: AppContext,
+        options: Optional[GroupJoinOption] = None,
     ) -> List[Group]:
         try:
             stmt = select(Group)
-            stmt = self._prepare_query(query, stmt)
+            stmt = self._prepare_query(query, stmt, options)
             result = await session.execute(stmt)
             groups = result.scalars().all()
             return groups

@@ -19,6 +19,8 @@ from app.common.schemas.group import (
     GroupInvitationInfo,
     GroupInfo,
     GroupMemberCreate,
+    GroupMemberListInfo,
+    GroupMemberListQuery,
     GroupQuery,
 )
 from app.common.schemas.user import Credential, SwitchGroupRequest, UserInfo, UserUpdate
@@ -354,10 +356,12 @@ class GroupService:
             raise ForbiddenException(message="You cannot view this invitation")
 
         async def create_membership(session: AsyncSession) -> GroupMembers | None:
-            existing_member = await self.repo.group_members_repo().get_group_member_by_id(
-                session=session,
-                member_id=invitation.member_id,
-                group_id=invitation.group_id,
+            existing_member = (
+                await self.repo.group_members_repo().get_group_member_by_id(
+                    session=session,
+                    member_id=invitation.member_id,
+                    group_id=invitation.group_id,
+                )
             )
             if existing_member is not None:
                 return existing_member
@@ -374,7 +378,10 @@ class GroupService:
         try:
             group_member = await self.repo.transaction_wrapper(create_membership)
         except IntegrityError:
-            async def get_existing_membership(session: AsyncSession) -> GroupMembers | None:
+
+            async def get_existing_membership(
+                session: AsyncSession,
+            ) -> GroupMembers | None:
                 return await self.repo.group_members_repo().get_group_member_by_id(
                     session=session,
                     member_id=invitation.member_id,
@@ -485,6 +492,7 @@ class GroupService:
         Raises:
             BadRequestException: If the group name is missing.
         """
+
         async def _create_group(session: AsyncSession) -> GroupInfo:
             try:
                 if group_create.name is None:
@@ -548,6 +556,7 @@ class GroupService:
         Returns:
             Group identifiers and names suitable for a selection control.
         """
+
         async def _list_group_key_value(session: AsyncSession) -> List[Dict[UUID, str]]:
             try:
                 query = GroupQuery(members=[credential.id])
@@ -567,6 +576,38 @@ class GroupService:
 
         return await self.repo.transaction_wrapper(_list_group_key_value)
 
+    @require_permission(GroupRole.ADMIN)
+    async def list_group_members(
+        self,
+        query: GroupMemberListQuery,
+        credential: Credential,
+        ctx: AppContext,
+        group_id: UUID | None = None,
+    ) -> tuple[List[GroupMemberListInfo], int]:
+        """Return an authorized, filtered page of group memberships."""
+
+        async def _list_group_members(
+            session: AsyncSession,
+        ) -> tuple[List[GroupMemberListInfo], int]:
+            await self._validate_group_exists(query.group_id, session, ctx)
+            rows, total = await self.repo.group_members_repo().list_group_members(
+                session=session, query=query, ctx=ctx
+            )
+            return [
+                GroupMemberListInfo(
+                    member_id=member.member_id,
+                    image_url=user.image_url,
+                    email=user.email,
+                    name=user.name,
+                    joined_at=member.created_at,
+                    role=member.role,
+                    status=user.status,
+                )
+                for member, user in rows
+            ], total
+
+        return await self.repo.transaction_wrapper(_list_group_members)
+
     async def get_group(
         self, group_id: UUID, ctx: AppContext, credential: Credential
     ) -> GroupInfo:
@@ -583,6 +624,7 @@ class GroupService:
         Raises:
             BadRequestException: If the group is absent or the caller is not a member.
         """
+
         async def _get_group(session: AsyncSession) -> GroupInfo:
             try:
                 group = await self.repo.group_repo().get_group(
@@ -621,6 +663,7 @@ class GroupService:
         Raises:
             BadRequestException: If the group is absent or the caller is not a member.
         """
+
         async def _switch_current_user_active_group(session: AsyncSession) -> None:
             try:
 

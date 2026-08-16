@@ -105,7 +105,9 @@ class UserRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
         except Exception as e:
-            logger.error(msg=f"Get users by emails repository: Exception: {e}", context=ctx)
+            logger.error(
+                msg=f"Get users by emails repository: Exception: {e}", context=ctx
+            )
             raise
 
     async def get_user_profile(
@@ -135,6 +137,7 @@ class UserRepository:
                     session=session,
                     query=UserQuery(id=user_id),
                     ctx=ctx,
+                    options=options,
                 )
                 group = None
 
@@ -156,7 +159,9 @@ class UserRepository:
                 ),
             )
         except Exception as e:
-            logger.error(msg=f"Get user profile repository: Exception: {e}", context=ctx)
+            logger.error(
+                msg=f"Get user profile repository: Exception: {e}", context=ctx
+            )
             raise
 
     async def get_user_profile_with_cache(

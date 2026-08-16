@@ -2,13 +2,16 @@ import datetime
 from typing import List, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Select, func, select
 from app.common.context import AppContext
 from app.common.middleware.logger import Logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.external.redis.redis import RedisClient
 from app.models.group_members import GroupMembers
+from app.models.user import User
+from app.common.enum.user_status import UserStatus
+from app.common.schemas.group import GroupMemberListQuery
 
 logger = Logger()
 
@@ -69,6 +72,59 @@ class GroupMembersRepository:
             logger.error(
                 msg=f"List existing group members repository: Exception: {e}",
                 context=ctx,
+            )
+            raise
+
+    def _prepare_list_query(
+        self, query: GroupMemberListQuery, stmt: Select
+    ) -> Select:
+        stmt = stmt.where(
+            GroupMembers.group_id == query.group_id,
+            User.status != UserStatus.DELETED,
+        )
+        if query.email is not None:
+            stmt = stmt.where(User.email.ilike(f"%{query.email}%"))
+        if query.role is not None:
+            stmt = stmt.where(GroupMembers.role == query.role)
+        if query.status is not None:
+            stmt = stmt.where(User.status == query.status)
+
+        order_column = (
+            User.name if query.order_by.value == "name" else GroupMembers.created_at
+        )
+        order = (
+            order_column.asc()
+            if query.order_direction.value == "asc"
+            else order_column.desc()
+        )
+        return stmt.order_by(order, GroupMembers.member_id.asc())
+
+    async def list_group_members(
+        self,
+        session: AsyncSession,
+        query: GroupMemberListQuery,
+        ctx: AppContext,
+    ) -> tuple[list[tuple[GroupMembers, User]], int]:
+        """Return a filtered page of non-deleted group members and its total."""
+        try:
+            base_stmt = select(GroupMembers, User).join(
+                User, GroupMembers.member_id == User.id
+            )
+            stmt = self._prepare_list_query(query, base_stmt)
+            stmt = stmt.offset((query.page - 1) * query.page_size).limit(
+                query.page_size
+            )
+            result = await session.execute(stmt)
+
+            count_stmt = select(func.count()).select_from(GroupMembers).join(
+                User, GroupMembers.member_id == User.id
+            )
+            count_stmt = self._prepare_list_query(query, count_stmt).order_by(None)
+            total = (await session.execute(count_stmt)).scalar_one()
+            return list(result.all()), total
+        except Exception as e:
+            logger.error(
+                msg=f"List group members repository: Exception: {e}", context=ctx
             )
             raise
 
