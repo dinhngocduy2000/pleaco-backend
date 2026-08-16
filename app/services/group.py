@@ -49,6 +49,13 @@ class GroupService:
         permission_service: PermissionService,
         add_group_member_topic: AddGroupMemberTopic,
     ) -> None:
+        """Initialize group workflows and their infrastructure dependencies.
+
+        Args:
+            repo: Registry providing group, user, membership, and invitation storage.
+            permission_service: Resolves group-scoped roles for protected actions.
+            add_group_member_topic: Publishes invitation-email delivery requests.
+        """
         self.repo = repo
         self.permission_service = permission_service
         self.add_group_member_topic = add_group_member_topic
@@ -56,6 +63,19 @@ class GroupService:
     async def _validate_group_exists(
         self, group_id: UUID, session: AsyncSession, ctx: AppContext
     ) -> Group:
+        """Load the target group or reject an invitation for an unknown group.
+
+        Args:
+            group_id: Identifier of the group receiving new members.
+            session: Active transaction-scoped database session.
+            ctx: Request trace context for repository logging.
+
+        Returns:
+            The persisted group.
+
+        Raises:
+            NotFoundException: If no group matches ``group_id``.
+        """
         group = await self.repo.group_repo().get_group(
             session=session, query=GroupQuery(id=group_id), ctx=ctx
         )
@@ -67,6 +87,18 @@ class GroupService:
     def _validate_member_roles(
         members: List[GroupMemberCreate], ctx: AppContext
     ) -> None:
+        """Ensure every requested invitation has an assignable role.
+
+        Owners and administrators cannot be assigned through invitations. Only
+        member, moderator, and guest roles are accepted.
+
+        Args:
+            members: Requested recipients and their intended group roles.
+            ctx: Request trace context for error logging.
+
+        Raises:
+            BadRequestException: If any requested role is not assignable.
+        """
         allowed_roles = {GroupRole.MEMBER, GroupRole.MODERATOR, GroupRole.GUEST}
         invalid_roles = {member.role for member in members} - allowed_roles
         if invalid_roles:
@@ -79,6 +111,18 @@ class GroupService:
     def _validate_unique_request_emails(
         members: List[GroupMemberCreate], ctx: AppContext
     ) -> List[str]:
+        """Normalize and ensure emails occur once within an invitation batch.
+
+        Args:
+            members: Requested recipients.
+            ctx: Request trace context for error logging.
+
+        Returns:
+            Lowercase recipient email addresses in request order.
+
+        Raises:
+            BadRequestException: If the request contains the same email twice.
+        """
         emails = [str(member.email).lower() for member in members]
         if len(emails) != len(set(emails)):
             logger.error(msg="Duplicate member emails are not allowed", context=ctx)
@@ -93,6 +137,16 @@ class GroupService:
         session: AsyncSession,
         ctx: AppContext,
     ) -> Dict[str, User]:
+        """Resolve invitation recipients by normalized email in one repository call.
+
+        Args:
+            members: Requested recipients.
+            session: Active transaction-scoped database session.
+            ctx: Request trace context for repository logging.
+
+        Returns:
+            Users keyed by their lowercase email address.
+        """
         emails = [str(member.email).lower() for member in members]
         users = await self.repo.user_repo().get_by_emails(
             session=session, emails=emails, ctx=ctx
@@ -103,6 +157,16 @@ class GroupService:
     def _validate_users_found(
         users_by_email: Dict[str, User], requested_emails: List[str], ctx: AppContext
     ) -> None:
+        """Ensure every requested email belongs to an existing account.
+
+        Args:
+            users_by_email: Resolved users keyed by normalized email.
+            requested_emails: Normalized emails submitted by the caller.
+            ctx: Request trace context reserved for validation logging.
+
+        Raises:
+            BadRequestException: If one or more recipients do not exist.
+        """
         missing_emails = set(requested_emails) - set(users_by_email)
         if missing_emails:
             raise BadRequestException(message="One or more invited users do not exist")
@@ -111,6 +175,16 @@ class GroupService:
     def _validate_invitable_user_statuses(
         users_by_email: Dict[str, User], ctx: AppContext
     ) -> None:
+        """Restrict invitations to ACTIVE and PENDING accounts.
+
+        Args:
+            users_by_email: Resolved invitation recipients.
+            ctx: Request trace context reserved for validation logging.
+
+        Raises:
+            BadRequestException: If any account is inactive, deleted, or otherwise
+                not eligible for a group invitation.
+        """
         allowed_statuses = {UserStatus.ACTIVE, UserStatus.PENDING}
         if any(user.status not in allowed_statuses for user in users_by_email.values()):
             raise BadRequestException(
@@ -124,6 +198,17 @@ class GroupService:
         session: AsyncSession,
         ctx: AppContext,
     ) -> None:
+        """Reject a batch containing users already in the target group.
+
+        Args:
+            group_id: Target group identifier.
+            users: Resolved users being invited.
+            session: Active transaction-scoped database session.
+            ctx: Request trace context for repository logging.
+
+        Raises:
+            BadRequestException: If any requested user already has membership.
+        """
         existing_member_ids = (
             await self.repo.group_members_repo().list_existing_member_ids(
                 session=session,
@@ -145,7 +230,29 @@ class GroupService:
         credential: Credential,
         ctx: AppContext,
     ) -> List[GroupInvitationInfo]:
-        """Add valid users to a group and enqueue their invitation emails."""
+        """Add eligible users to a group and request invitation-email delivery.
+
+        Authorization is enforced by ``require_permission`` against ``group_id``.
+        All request validation and membership inserts occur before the transaction
+        commits. Redis invitation persistence and RabbitMQ publishing happen after
+        commit; their failures are logged without undoing valid memberships.
+
+        Args:
+            group_id: Group receiving the new memberships.
+            members: Existing-user email addresses and allowed group roles.
+            credential: Authenticated caller sending the invitations.
+            ctx: Request trace and authorization context.
+
+        Returns:
+            Invitation metadata generated for every committed membership.
+
+        Raises:
+            BadRequestException: If the batch is empty, invalid, duplicated, has
+                unknown/ineligible users, or includes existing members.
+            ForbiddenException: If the caller lacks Owner or Admin permission for
+                the target group.
+            NotFoundException: If the target group does not exist.
+        """
         if not members or len(members) == 0:
             raise BadRequestException(message="At least one member is required")
 
@@ -230,17 +337,52 @@ class GroupService:
     async def get_group_invitation(
         self, invitation_id: UUID, credential: Credential, ctx: AppContext
     ) -> GroupInvitationInfo:
+        """Retrieve and consume an invitation belonging to the authenticated user.
+
+        The invitation is deleted from Redis after its recipient successfully
+        retrieves it, so this currently behaves as a one-time validation step.
+
+        Args:
+            invitation_id: Invitation identifier from the frontend route.
+            credential: Authenticated user attempting to view the invitation.
+            ctx: Request trace context for logging and Redis access.
+
+        Returns:
+            The matching invitation metadata.
+
+        Raises:
+            NotFoundException: If the invitation is missing or expired.
+            ForbiddenException: If the invitation belongs to another email address.
+        """
         invitation = await self.repo.group_invitation_repo().get(invitation_id, ctx)
         if invitation is None:
+            logger.error(
+                msg=f"Invitation with id {invitation_id} not found", context=ctx
+            )
             raise NotFoundException(message="Invitation not found or expired")
         if not secrets.compare_digest(
             str(invitation.email).lower(), credential.email.lower()
         ):
+            logger.error(
+                msg=f"User {credential.email} is not authorized to view invitation {invitation_id}",
+                context=ctx,
+            )
             raise ForbiddenException(message="You cannot view this invitation")
+
+        await self.repo.group_invitation_repo().delete(invitation_id, ctx)
         return invitation
 
     @staticmethod
     def _to_group_info(group: Group, members: List[User]) -> GroupInfo:
+        """Map a group and its member ORM entities to the public group schema.
+
+        Args:
+            group: Persisted group entity.
+            members: Users currently associated with the group.
+
+        Returns:
+            API-safe group information with member profile fields.
+        """
         return GroupInfo(
             id=group.id,
             name=group.name,
@@ -270,6 +412,19 @@ class GroupService:
         credential: Credential,
         is_owner_create: Optional[bool] = None,
     ) -> None:
+        """Create initial group membership rows and warm their Redis cache entries.
+
+        The creator is always included. During group creation, all supplied users
+        receive the owner role because that is the existing group-creation policy.
+
+        Args:
+            member_ids: User IDs supplied during group creation.
+            group_id: Newly created group identifier.
+            ctx: Request trace context for persistence and cache logging.
+            session: Active transaction-scoped database session.
+            credential: Authenticated creator, who is always included.
+            is_owner_create: Whether this creation flow assigns the owner role.
+        """
         member_ids = dict.fromkeys([*(member_ids or []), credential.id])
         new_group_members = [
             GroupMembers(
@@ -298,6 +453,19 @@ class GroupService:
     async def create_group(
         self, group_create: GroupCreateDTO, credential: Credential, ctx: AppContext
     ) -> GroupInfo:
+        """Create a group, assign its initial members, and select it for its owner.
+
+        Args:
+            group_create: Requested group name, description, and initial members.
+            credential: Authenticated user who becomes the group owner.
+            ctx: Request trace context for persistence and cache operations.
+
+        Returns:
+            The created group with its member profiles.
+
+        Raises:
+            BadRequestException: If the group name is missing.
+        """
         async def _create_group(session: AsyncSession) -> GroupInfo:
             try:
                 if group_create.name is None:
@@ -352,6 +520,15 @@ class GroupService:
     async def list_group_key_value(
         self, ctx: AppContext, credential: Credential
     ) -> List[HashMapResponse]:
+        """List the current user's groups as id/label pairs.
+
+        Args:
+            ctx: Request trace context for repository logging.
+            credential: Authenticated user whose memberships are queried.
+
+        Returns:
+            Group identifiers and names suitable for a selection control.
+        """
         async def _list_group_key_value(session: AsyncSession) -> List[Dict[UUID, str]]:
             try:
                 query = GroupQuery(members=[credential.id])
@@ -374,6 +551,19 @@ class GroupService:
     async def get_group(
         self, group_id: UUID, ctx: AppContext, credential: Credential
     ) -> GroupInfo:
+        """Return group details when the caller is a member of that group.
+
+        Args:
+            group_id: Requested group identifier.
+            ctx: Request trace context for repository logging.
+            credential: Authenticated user requesting group details.
+
+        Returns:
+            The group and its members.
+
+        Raises:
+            BadRequestException: If the group is absent or the caller is not a member.
+        """
         async def _get_group(session: AsyncSession) -> GroupInfo:
             try:
                 group = await self.repo.group_repo().get_group(
@@ -402,6 +592,16 @@ class GroupService:
     async def switch_current_user_active_group(
         self, input: SwitchGroupRequest, ctx: AppContext, credential: Credential
     ) -> None:
+        """Set the caller's active group after confirming their membership.
+
+        Args:
+            input: Requested active group identifier.
+            ctx: Request trace context for repository logging.
+            credential: Authenticated user switching groups.
+
+        Raises:
+            BadRequestException: If the group is absent or the caller is not a member.
+        """
         async def _switch_current_user_active_group(session: AsyncSession) -> None:
             try:
 

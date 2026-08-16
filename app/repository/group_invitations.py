@@ -16,9 +16,7 @@ class GroupInvitationRepository:
     def _key(invitation_id: UUID) -> str:
         return f"group-invitation:{invitation_id}"
 
-    async def save(
-        self, invitation: GroupInvitationInfo, ctx: AppContext
-    ) -> None:
+    async def save(self, invitation: GroupInvitationInfo, ctx: AppContext) -> None:
         await self._redis_client.set(
             key=self._key(invitation.invitation_id),
             value=invitation.model_dump_json(),
@@ -32,3 +30,7 @@ class GroupInvitationRepository:
         if value is None:
             return None
         return GroupInvitationInfo.model_validate_json(value)
+
+    async def delete(self, invitation_id: UUID, ctx: AppContext) -> None:
+        await self._redis_client.delete(self._key(invitation_id))
+        return

@@ -50,6 +50,9 @@ class GroupInvitationRepositoryStub:
     async def get(self, invitation_id, ctx):
         return self.invitation
 
+    async def delete(self, invitation_id, ctx):
+        self.invitation = None
+
 
 class TopicStub:
     def __init__(self) -> None:
@@ -124,7 +127,7 @@ def test_validation_helpers_reject_invalid_roles_and_duplicate_emails() -> None:
         GroupService._validate_member_roles(
             [GroupMemberCreate(email="alex@example.com", role=GroupRole.ADMIN)], ctx
         )
-    with pytest.raises(BadRequestException, match="Duplicate"):
+    with pytest.raises(BadRequestException, match="duplicated"):
         GroupService._validate_unique_request_emails(
             [
                 GroupMemberCreate(email="Alex@example.com", role=GroupRole.MEMBER),
@@ -249,12 +252,15 @@ async def test_invitation_lookup_is_limited_to_the_invited_user() -> None:
         created_at=datetime.now(timezone.utc),
         expires_at=datetime.now(timezone.utc),
     )
+    stored_invitation = invitation_repo.invitation
     invitation = await service.get_group_invitation(
-        invitation_repo.invitation.invitation_id,
+        stored_invitation.invitation_id,
         Credential(id=user.id, email=user.email, status=UserStatus.ACTIVE),
         _ctx(),
     )
-    assert invitation == invitation_repo.invitation
+    assert invitation == stored_invitation
+    assert invitation_repo.invitation is None
+    invitation_repo.invitation = stored_invitation
     with pytest.raises(ForbiddenException):
         await service.get_group_invitation(
             invitation.invitation_id,
