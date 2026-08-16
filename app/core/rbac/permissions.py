@@ -158,7 +158,16 @@ class PermissionService:
                         raise ForbiddenException(
                             message="This user is not found in the current group"
                         )
-                    member_info = member.view()
+                    member_info =GroupMemberInfo(
+                        created_at=member.created_at,
+                        updated_at=member.updated_at,
+                        member_id=str(member.member_id),
+                        group_id=str(member.group_id),
+                        role=member.role.value,
+                    )
+                    await self.repo.group_members_repo().set_group_member_redis(
+                        member=member, ctx=ctx
+                    )
                 else:
                     member_info = GroupMemberInfo(
                         created_at=cached_member["created_at"],

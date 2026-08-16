@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, List, Optional
 from uuid import UUID
 from app.common.context import AppContext
@@ -75,6 +76,15 @@ class GroupService:
             group_members=new_group_members,
             ctx=ctx,
             session=session,
+        )
+        await asyncio.gather(
+            *(
+                self.repo.group_members_repo().set_group_member_redis(
+                    member=group_member,
+                    ctx=ctx,
+                )
+                for group_member in new_group_members
+            )
         )
 
     async def create_group(

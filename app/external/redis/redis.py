@@ -1,3 +1,5 @@
+from typing import Optional
+
 from redis.asyncio import ConnectionPool, Redis
 from app.common.middleware.logger import Logger
 from app.core.config import settings
@@ -37,9 +39,9 @@ class RedisClient:
         async with Redis(connection_pool=self.pool) as client:
             await client.decr(key, amount)
 
-    async def hset(self, key, mapping):
+    async def hset(self, key: Optional[str], mapping:Optional[dict]):
         async with Redis(connection_pool=self.pool) as client:
-            await client.hset(key=key, mapping=mapping)
+            await client.hset(mapping=mapping, name=key)
 
     async def hgetall(self, key) -> dict[str, str]:
         async with Redis(connection_pool=self.pool) as client:

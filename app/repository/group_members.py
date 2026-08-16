@@ -1,3 +1,4 @@
+import datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -48,7 +49,8 @@ class GroupMembersRepository:
             raise e
 
     # ------------ Redis ---------------
-    async def set_group_member(self, member: GroupMembers) -> None:
+    async def set_group_member_redis(self, member: GroupMembers, ctx: AppContext) -> None:
+        logger.info(msg=f"Setting group member in Redis: {member.__dict__}", context=ctx)
         try:
             await self._redis_client.hset(
                 key=f"{member.member_id}:{member.group_id}",
@@ -56,22 +58,22 @@ class GroupMembersRepository:
                     "member_id": str(member.member_id),
                     "group_id": str(member.group_id),
                     "role": member.role.value,  # Enum → str
-                    "created_at": member.created_at.isoformat(),
-                    "updated_at": member.updated_at.isoformat(),  # datetime → str
+                    "created_at": datetime.datetime.now().isoformat(),  # datetime → str
+                    "updated_at": datetime.datetime.now().isoformat(),  # datetime → str
                     # datetime → str
                 },
             )
             return
         except Exception as e:
-            logger.error(msg=f"Error in setting group member in Redis: {e}")
+            logger.error(msg=f"Error in setting group member in Redis: {e}", context=ctx)
             raise e
 
     async def get_group_member_redis(
-        self, group_id: UUID, member_id: UUID
+        self, group_id: UUID, member_id: UUID, ctx: AppContext
     ) -> dict[str, str]:
         try:
             group_member = await self._redis_client.hgetall(f"{member_id}:{group_id}")
             return group_member
         except Exception as e:
-            logger.error(msg=f"Error in getting group member in Redis: {e}")
+            logger.error(msg=f"Error in getting group member in Redis: {e}", context=ctx)
             raise e
