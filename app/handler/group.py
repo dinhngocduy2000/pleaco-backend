@@ -6,6 +6,7 @@ from app.common.enum.context_actions import (
     CREATE_GROUP,
     GET_GROUP_BY_ID,
     INVITE_MEMBER,
+    LIST_GROUP_MEMBERS,
     LIST_GROUP_KEY_VALUE,
     SWITCH_CURRENT_USER_GROUP,
     VALIDATE_GROUP_INVITATION,
@@ -13,12 +14,18 @@ from app.common.enum.context_actions import (
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.middleware.logger import Logger
-from app.common.schemas.common import BaseResponse, HashMapResponse
+from app.common.schemas.common import (
+    BaseResponse,
+    HashMapResponse,
+    PaginationBaseResponse,
+)
 from app.common.schemas.group import (
     GroupCreateDTO,
     GroupInvitationInfo,
     GroupInfo,
     GroupMemberCreate,
+    GroupMemberListInfo,
+    GroupMemberListQuery,
 )
 from app.common.schemas.user import Credential, SwitchGroupRequest
 from app.services.group import GroupService
@@ -93,6 +100,28 @@ class GroupHandler:
             data=group,
             message="Success",
             statusCode=200,
+        )
+
+    @exception_handler
+    async def list_group_members(
+        self,
+        query: GroupMemberListQuery = Depends(),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> PaginationBaseResponse[GroupMemberListInfo]:
+        ctx = AppContext(
+            trace_id=uuid4(), action=LIST_GROUP_MEMBERS, actor=credential.id
+        )
+        members, total = await self.service.list_group_members(
+            query=query,
+            group_id=query.group_id,
+            credential=credential,
+            ctx=ctx,
+        )
+        return PaginationBaseResponse[GroupMemberListInfo](
+            total=total,
+            page=query.page,
+            page_size=query.page_size,
+            items=members,
         )
 
     @exception_handler

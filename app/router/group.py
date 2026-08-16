@@ -1,7 +1,7 @@
 from typing import List
 from fastapi import APIRouter, status
-from app.common.schemas.common import BaseResponse, HashMapResponse
-from app.common.schemas.group import GroupInvitationInfo, GroupInfo
+from app.common.schemas.common import BaseResponse, HashMapResponse, PaginationBaseResponse
+from app.common.schemas.group import GroupInvitationInfo, GroupInfo, GroupMemberListInfo
 from app.handler.group import GroupHandler
 
 
@@ -51,6 +51,16 @@ class GroupRouter:
                     },
                 },
             },
+        )
+
+        self.router.add_api_route(
+            path="/members",
+            endpoint=self.handler.list_group_members,
+            methods=["GET"],
+            response_model=PaginationBaseResponse[GroupMemberListInfo],
+            status_code=status.HTTP_200_OK,
+            summary="List group members",
+            description="List group members for group Owners and Admins.",
         )
 
         self.router.add_api_route(
