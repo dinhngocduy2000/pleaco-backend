@@ -30,7 +30,7 @@ def upgrade() -> None:
         "ix_group_members_pending_invitation_expiry",
         "group_members",
         ["invitation_expires_at"],
-        postgresql_where=sa.text("invitation_status = 'pending'"),
+        postgresql_where=sa.text("invitation_status = 'PENDING'"),
     )
 
 

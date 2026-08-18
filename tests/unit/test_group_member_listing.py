@@ -6,6 +6,7 @@ import pytest
 
 from app.common.context import AppContext
 from app.common.enum.context_actions import LIST_GROUP_MEMBERS
+from app.common.enum.group_member_status import GroupMemberInvitationStatus
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import ForbiddenException
@@ -94,7 +95,10 @@ async def test_owner_and_admin_can_list_group_members_with_membership_data(
     member_id = uuid4()
     joined_at = datetime.now(timezone.utc)
     membership = SimpleNamespace(
-        member_id=member_id, created_at=joined_at, role=GroupRole.MEMBER
+        member_id=member_id,
+        created_at=joined_at,
+        role=GroupRole.MEMBER,
+        invitation_status=GroupMemberInvitationStatus.ACCEPTED,
     )
     user = SimpleNamespace(
         image_url="https://example.com/avatar.png",

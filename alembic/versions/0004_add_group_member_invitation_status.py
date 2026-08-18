@@ -19,9 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     invitation_status = postgresql.ENUM(
-        "pending",
-        "accepted",
-        "rejected",
+        "PENDING",
+        "ACCEPTED",
+        "REJECTED",
         name="group_member_status",
         create_type=False,
     )
@@ -32,7 +32,7 @@ def upgrade() -> None:
             "invitation_status",
             invitation_status,
             nullable=False,
-            server_default=sa.text("'accepted'"),
+            server_default=sa.text("'ACCEPTED'"),
         ),
     )
 
