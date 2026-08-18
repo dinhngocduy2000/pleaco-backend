@@ -60,7 +60,26 @@ class GroupRouter:
             response_model=PaginationBaseResponse[GroupMemberListInfo],
             status_code=status.HTTP_200_OK,
             summary="List group members",
-            description="List group members for group Owners and Admins.",
+            description=(
+                "List group members for group Owners and Admins.\n\n"
+                "Example query options:\n"
+                "```json\n"
+                "{\n"
+                '  "group_id": "550e8400-e29b-41d4-a716-446655440000",\n'
+                '  "page": 1,\n'
+                '  "page_size": 10,\n'
+                '  "order_by": "joined_date",\n'
+                '  "order_direction": "desc",\n'
+                '  "email": "member@example.com",\n'
+                '  "role": "member",\n'
+                '  "status": "ACTIVE"\n'
+                "}\n"
+                "```\n\n"
+                "Equivalent request: "
+                "`/members?group_id=550e8400-e29b-41d4-a716-446655440000"
+                "&page=1&page_size=10&order_by=joined_date&order_direction=desc"
+                "&email=member%40example.com&role=member&status=ACTIVE`"
+            ),
         )
 
         self.router.add_api_route(

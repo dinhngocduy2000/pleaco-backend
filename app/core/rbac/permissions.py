@@ -162,6 +162,7 @@ class PermissionService:
                             session=session,
                             member_id=credential.id,
                             group_id=target_group_id,
+                            accepted_only=True,
                         )
                     )
                     if member is None:

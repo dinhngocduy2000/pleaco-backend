@@ -1,10 +1,11 @@
 from typing import Dict, List, Optional
 from uuid import UUID
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, and_, select, update
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
+from app.common.enum.group_member_status import GroupMemberInvitationStatus
 from app.common.middleware.logger import Logger
 from app.common.schemas.group import (
     GroupCreateDomain,
@@ -37,7 +38,13 @@ class GroupRepository:
             stmt = stmt.where(Group.owner_id == query.owner_id)
         if query.members is not None and len(query.members) > 0:
             stmt = stmt.where(
-                Group.members.any(GroupMembers.member_id.in_(query.members))
+                Group.members.any(
+                    and_(
+                        GroupMembers.member_id.in_(query.members),
+                        GroupMembers.invitation_status
+                        == GroupMemberInvitationStatus.ACCEPTED,
+                    )
+                )
             )
         if options is not None:
             if options.include_members:
@@ -104,7 +111,11 @@ class GroupRepository:
             stmt = (
                 select(User)
                 .join(GroupMembers, GroupMembers.member_id == User.id)
-                .where(GroupMembers.group_id == group_id)
+                .where(
+                    GroupMembers.group_id == group_id,
+                    GroupMembers.invitation_status
+                    == GroupMemberInvitationStatus.ACCEPTED,
+                )
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())

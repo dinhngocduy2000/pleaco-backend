@@ -53,6 +53,7 @@ class Settings(BaseAppSettings):
     SMTP_USE_TLS: bool = True
     OTP_CODE_EXPIRE_SECONDS: int = 600  # 10 minutes
     INVITATION_EXPIRE_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
+    INVITATION_EXPIRY_SWEEP_INTERVAL_SECONDS: int = 60
 
     # Cache / Redis
     REDIS_HOST: str = "localhost"
