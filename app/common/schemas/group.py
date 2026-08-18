@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.schemas.common import PaginationBaseRequest
+from app.common.enum.group_member_status import GroupMemberInvitationStatus
 
 if TYPE_CHECKING:
     from app.common.schemas.user import UserInfo
@@ -88,6 +89,9 @@ class GroupMemberListInfo(BaseModel):
     joined_at: datetime = Field(..., description="Date the member joined the group")
     role: GroupRole = Field(..., description="Member role in the group")
     status: UserStatus = Field(..., description="Member account status")
+    invitation_status: Optional[GroupMemberInvitationStatus] = Field(
+        ..., description="Invitation status if the member was invited"
+    )
 
 
 class GroupMemberCreate(BaseModel):

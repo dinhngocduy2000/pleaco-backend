@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import suppress
 from pathlib import Path
 from collections.abc import  Callable
 from app.core.rbac.permissions import PermissionService
@@ -70,6 +72,10 @@ class App:
                 permission_service=permission_service,
                 add_group_member_topic=add_group_member_topic,
             )
+            self.application.state.group_invitation_expiry_task = asyncio.create_task(
+                group_service.run_invitation_expiry_reconciler(),
+                name="group-invitation-expiry-reconciler",
+            )
             AuthMiddleware.init(auth_service=auth_service)
 
             # ------------ Handler ------------
@@ -109,6 +115,13 @@ class App:
     def on_terminate_app(self) -> Callable:
         @logger.catch
         async def stop_app() -> None:
+            expiry_task = getattr(
+                self.application.state, "group_invitation_expiry_task", None
+            )
+            if expiry_task is not None:
+                expiry_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await expiry_task
             rabbitmq_client = getattr(self.application.state, "rabbitmq", None)
             if rabbitmq_client is not None:
                 await rabbitmq_client.close()
