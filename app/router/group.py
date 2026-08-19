@@ -103,6 +103,16 @@ class GroupRouter:
         )
 
         self.router.add_api_route(
+            path="/invitations/{invitation_id}",
+            endpoint=self.handler.get_group_invitation,
+            methods=["GET"],
+            response_model=BaseResponse[GroupInvitationInfo],
+            status_code=status.HTTP_200_OK,
+            summary="Get a group invitation",
+            description="Get invitation details for the invited authenticated user.",
+        )
+
+        self.router.add_api_route(
             path="/key-value",
             endpoint=self.handler.list_group_key_value,
             methods=["GET"],

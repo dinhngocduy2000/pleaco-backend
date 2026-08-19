@@ -379,6 +379,44 @@ async def test_invitation_acceptance_activates_and_consumes_membership() -> None
 
 
 @pytest.mark.asyncio
+async def test_only_the_invited_email_can_get_invitation_details() -> None:
+    user = _user("alex@example.com")
+    service, _, invitation_repo, _ = _service([user])
+    invitation = (
+        await service.invite_group_members(
+            group_id=service._test_group_id,
+            members=[GroupMemberCreate(email=user.email, role=GroupRole.MEMBER)],
+            credential=Credential(
+                id=uuid4(), email="admin@example.com", status=UserStatus.ACTIVE
+            ),
+            ctx=_ctx(),
+        )
+    )[0]
+
+    result = await service.get_group_invitation(
+        invitation.invitation_id,
+        Credential(id=user.id, email=user.email.upper(), status=UserStatus.ACTIVE),
+        _ctx(),
+    )
+    assert result == invitation
+
+    with pytest.raises(ForbiddenException, match="cannot view"):
+        await service.get_group_invitation(
+            invitation.invitation_id,
+            Credential(id=uuid4(), email="other@example.com", status=UserStatus.ACTIVE),
+            _ctx(),
+        )
+
+    await invitation_repo.consume(invitation, _ctx())
+    with pytest.raises(NotFoundException, match="expired or does not exist"):
+        await service.get_group_invitation(
+            invitation.invitation_id,
+            Credential(id=user.id, email=user.email, status=UserStatus.ACTIVE),
+            _ctx(),
+        )
+
+
+@pytest.mark.asyncio
 async def test_invitation_acceptance_is_successful_for_an_existing_member() -> None:
     user = _user("alex@example.com")
     service, members_repo, invitation_repo, _ = _service([user], {user.id})
