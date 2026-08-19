@@ -5,6 +5,7 @@ from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_GROUP,
     GET_GROUP_BY_ID,
+    GET_GROUP_INVITATION,
     INVITE_MEMBER,
     LIST_GROUP_MEMBERS,
     LIST_GROUP_KEY_VALUE,
@@ -184,5 +185,27 @@ class GroupHandler:
         return BaseResponse[str](
             data=result,
             message="Invitation accepted",
+            statusCode=200,
+        )
+
+    @exception_handler
+    async def get_group_invitation(
+        self,
+        invitation_id: UUID = Path(..., description="Invitation id"),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[GroupInvitationInfo]:
+        ctx = AppContext(
+            trace_id=uuid4(),
+            action=GET_GROUP_INVITATION,
+            actor=credential.id,
+        )
+        invitation = await self.service.get_group_invitation(
+            invitation_id=invitation_id,
+            credential=credential,
+            ctx=ctx,
+        )
+        return BaseResponse[GroupInvitationInfo](
+            data=invitation,
+            message="Success",
             statusCode=200,
         )

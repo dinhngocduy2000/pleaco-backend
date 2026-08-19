@@ -409,6 +409,36 @@ class GroupService:
         await self.repo.group_invitation_repo().consume(invitation, ctx)
         return "Invitation accepted"
 
+    async def get_group_invitation(
+        self, invitation_id: UUID, credential: Credential, ctx: AppContext
+    ) -> GroupInvitationInfo:
+        """Return an invitation only to its intended email recipient.
+
+        Raises:
+            NotFoundException: If the Redis invitation has expired or does not exist.
+            ForbiddenException: If the authenticated email is not the recipient.
+        """
+        invitation = await self.repo.group_invitation_repo().get(invitation_id, ctx)
+        if invitation is None:
+            logger.error(
+                msg=f"Invitation with id {invitation_id} not found", context=ctx
+            )
+            raise NotFoundException(message="Invitation has expired or does not exist")
+
+        if not secrets.compare_digest(
+            str(invitation.email).lower(), credential.email.lower()
+        ):
+            logger.error(
+                msg=(
+                    f"User {credential.email} is not authorized to view invitation "
+                    f"{invitation_id}"
+                ),
+                context=ctx,
+            )
+            raise ForbiddenException(message="You cannot view this invitation")
+
+        return invitation
+
     async def reject_expired_group_invitations(self, ctx: AppContext) -> int:
         """Mark pending memberships rejected once their invitation TTL has elapsed."""
 

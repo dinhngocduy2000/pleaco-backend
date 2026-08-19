@@ -52,9 +52,7 @@ class AddGroupMemberTopic(Topic):
     async def _handle_message(self, message: TopicMessage) -> None:
         payload = AddGroupMemberMessage.model_validate(message.payload)
         ctx = AppContext(trace_id=uuid4(), action=SEND_EMAIL)
-        accept_url = (
-            f"{settings.FRONTEND_URL.rstrip('/')}/invitation/{payload.invitation_id}"
-        )
+        accept_url = f"{settings.FRONTEND_URL.rstrip('/')}/invitation?invitation_id={payload.invitation_id}"
         html = render_mail_html(
             "invite-group-member.html",
             recipient_email=payload.email,
