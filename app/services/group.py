@@ -20,12 +20,14 @@ from app.common.schemas.group import (
     GroupInvitationInfo,
     GroupInfo,
     GroupMemberCreate,
+    GroupMemberInfo,
     GroupMemberListInfo,
     GroupMemberListQuery,
+    GroupMemberUpdate,
     GroupQuery,
 )
 from app.common.schemas.user import Credential, SwitchGroupRequest, UserInfo, UserUpdate
-from app.core.rbac.permissions import PermissionService
+from app.core.rbac.permissions import ROLE_HIERACHY, PermissionService
 from app.core.rbac.role_validation import require_permission
 from app.core.config import settings
 from app.external.queues.topics.add_group_member import (
@@ -335,6 +337,140 @@ class GroupService:
                     msg="Unable to queue group invitation email", context=ctx
                 )
         return invitations
+
+    async def _get_manageable_group_member(
+        self,
+        session: AsyncSession,
+        group_id: UUID,
+        member_id: UUID,
+        credential: Credential,
+        ctx: AppContext,
+        *,
+        accepted_only: bool,
+    ) -> tuple[GroupMembers, GroupRole]:
+        """Load and authorize a member-management target within a group."""
+        await self._validate_group_exists(group_id, session, ctx)
+        if member_id == credential.id:
+            raise ForbiddenException(message="You cannot modify your own group membership")
+
+        target_member = await self.repo.group_members_repo().get_group_member_by_id(
+            session=session,
+            member_id=member_id,
+            group_id=group_id,
+            accepted_only=accepted_only,
+        )
+        if target_member is None:
+            raise NotFoundException(message="Group member not found")
+
+        requester = await self.permission_service.get_group_member(
+            credential=credential, ctx=ctx, group_id=group_id
+        )
+        if requester is None:
+            raise ForbiddenException(message="This user is not found in the current group")
+
+        if ROLE_HIERACHY.index(target_member.role) >= ROLE_HIERACHY.index(
+            requester.role
+        ):
+            raise ForbiddenException(
+                message="You cannot modify a member with an equal or higher role"
+            )
+        return target_member, requester.role
+
+    @require_permission(GroupRole.ADMIN)
+    async def update_group_member(
+        self,
+        group_id: UUID,
+        member_id: UUID,
+        member_update: GroupMemberUpdate,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> GroupMemberInfo:
+        """Change an accepted member's role without allowing privilege escalation."""
+
+        async def _update_group_member(session: AsyncSession) -> GroupMembers:
+            _, requester_role = await self._get_manageable_group_member(
+                session=session,
+                group_id=group_id,
+                member_id=member_id,
+                credential=credential,
+                ctx=ctx,
+                accepted_only=True,
+            )
+            if ROLE_HIERACHY.index(member_update.role) >= ROLE_HIERACHY.index(
+                requester_role
+            ):
+                raise ForbiddenException(
+                    message="You can only assign a role lower than your own"
+                )
+            updated_member = await self.repo.group_members_repo().update_group_member_role(
+                session=session,
+                member_id=member_id,
+                group_id=group_id,
+                role=member_update.role,
+                ctx=ctx,
+            )
+            if updated_member is None:
+                raise NotFoundException(message="Group member not found")
+            return updated_member
+
+        updated_member = await self.repo.transaction_wrapper(_update_group_member)
+        await self.repo.group_members_repo().set_group_member_redis(
+            member=updated_member, ctx=ctx
+        )
+        return GroupMemberInfo(
+            member_id=updated_member.member_id,
+            group_id=updated_member.group_id,
+            created_at=updated_member.created_at,
+            updated_at=updated_member.updated_at,
+            role=updated_member.role,
+        )
+
+    @require_permission(GroupRole.ADMIN)
+    async def delete_group_member(
+        self,
+        group_id: UUID,
+        member_id: UUID,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> None:
+        """Revoke any pending invitation and hard-delete a manageable membership."""
+
+        async def _validate_deletion(session: AsyncSession) -> GroupMembers:
+            target_member, _ = await self._get_manageable_group_member(
+                session=session,
+                group_id=group_id,
+                member_id=member_id,
+                credential=credential,
+                ctx=ctx,
+                accepted_only=False,
+            )
+            return target_member
+
+        target_member = await self.repo.transaction_wrapper(_validate_deletion)
+        if (
+            target_member.invitation_status == GroupMemberInvitationStatus.PENDING
+            and target_member.invitation_id is not None
+        ):
+            invitation = await self.repo.group_invitation_repo().get(
+                target_member.invitation_id, ctx
+            )
+            if invitation is not None:
+                await self.repo.group_invitation_repo().consume(invitation, ctx)
+
+        async def _hard_delete_group_member(session: AsyncSession) -> None:
+            deleted_member = await self.repo.group_members_repo().hard_delete_group_member(
+                session=session,
+                member_id=member_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if deleted_member is None:
+                raise NotFoundException(message="Group member not found")
+
+        await self.repo.transaction_wrapper(_hard_delete_group_member)
+        await self.repo.group_members_repo().delete_group_member_redis(
+            group_id=group_id, member_id=member_id, ctx=ctx
+        )
 
     async def validate_group_invitation(
         self, invitation_id: UUID, credential: Credential, ctx: AppContext

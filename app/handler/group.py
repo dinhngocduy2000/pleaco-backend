@@ -4,11 +4,13 @@ from fastapi import Body, Depends, Path, Request
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_GROUP,
+    EDIT_MEMBER,
     GET_GROUP_BY_ID,
     GET_GROUP_INVITATION,
     INVITE_MEMBER,
     LIST_GROUP_MEMBERS,
     LIST_GROUP_KEY_VALUE,
+    REMOVE_MEMBER,
     SWITCH_CURRENT_USER_GROUP,
     VALIDATE_GROUP_INVITATION,
 )
@@ -25,8 +27,10 @@ from app.common.schemas.group import (
     GroupInvitationInfo,
     GroupInfo,
     GroupMemberCreate,
+    GroupMemberInfo,
     GroupMemberListInfo,
     GroupMemberListQuery,
+    GroupMemberUpdate,
 )
 from app.common.schemas.user import Credential, SwitchGroupRequest
 from app.services.group import GroupService
@@ -166,6 +170,41 @@ class GroupHandler:
             data=invitations,
             message="Invitations created; invitation delivery is being processed",
             statusCode=201,
+        )
+
+    @exception_handler
+    async def update_group_member(
+        self,
+        group_id: UUID = Path(..., description="Group id"),
+        member_id: UUID = Path(..., description="Group member id"),
+        member_update: GroupMemberUpdate = Body(...),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[GroupMemberInfo]:
+        ctx = AppContext(trace_id=uuid4(), action=EDIT_MEMBER, actor=credential.id)
+        member = await self.service.update_group_member(
+            group_id=group_id,
+            member_id=member_id,
+            member_update=member_update,
+            credential=credential,
+            ctx=ctx,
+        )
+        return BaseResponse[GroupMemberInfo](
+            data=member, message="Group member updated", statusCode=200
+        )
+
+    @exception_handler
+    async def delete_group_member(
+        self,
+        group_id: UUID = Path(..., description="Group id"),
+        member_id: UUID = Path(..., description="Group member id"),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> None:
+        ctx = AppContext(trace_id=uuid4(), action=REMOVE_MEMBER, actor=credential.id)
+        await self.service.delete_group_member(
+            group_id=group_id,
+            member_id=member_id,
+            credential=credential,
+            ctx=ctx,
         )
 
     @exception_handler
