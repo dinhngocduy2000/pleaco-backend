@@ -6,6 +6,7 @@ from app.common.exceptions import (
     BadRequestException,
     ExceptionInternalError,
     ForbiddenException,
+    NotFoundException,
     UnauthorizedException,
 )
 from app.common.middleware.logger import Logger
@@ -26,6 +27,9 @@ def exception_handler(func):
             raise e
         except ForbiddenException as e:
             logger.error(f"HTTP Fobidden exception: {e}")
+            raise e
+        except NotFoundException as e:
+            logger.error(f"HTTP not found exception: {e}")
             raise e
         except ValidationError as e:
             logger.error(f"Validation error: {e}")

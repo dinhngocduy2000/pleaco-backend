@@ -7,6 +7,7 @@ from app.common.enum.context_actions import (
     CREATE_EVENT,
     DELETE_EVENT,
     DELETE_GROUP,
+    EDIT_MEMBER,
     EDIT_GROUP_SETTINGS,
     INVITE_MEMBER,
     LIST_CALENDAR_EVENTS,
@@ -44,6 +45,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         TRANSFER_OWNERSHIP,
         EDIT_GROUP_SETTINGS,
         INVITE_MEMBER,
+        EDIT_MEMBER,
         REMOVE_MEMBER,
         PROMOTE_TO_ADMIN,
         LIST_CALENDAR_EVENTS,
@@ -62,6 +64,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.ADMIN: {
         EDIT_GROUP_SETTINGS,
         INVITE_MEMBER,
+        EDIT_MEMBER,
         REMOVE_MEMBER,
         CREATE_EVENT,
         DELETE_EVENT,

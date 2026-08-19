@@ -101,6 +101,14 @@ class GroupMemberCreate(BaseModel):
     role: GroupRole = Field(..., description="Role assigned in the group")
 
 
+class GroupMemberUpdate(BaseModel):
+    """Allowed changes to an existing accepted group membership."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    role: GroupRole = Field(..., description="Replacement role assigned in the group")
+
+
 class GroupInvitationInfo(BaseModel):
     invitation_id: UUID = Field(..., description="Invitation id")
     group_id: UUID = Field(..., description="Group id")

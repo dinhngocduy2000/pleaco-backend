@@ -2,9 +2,10 @@ import datetime
 from typing import List, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Select, func, select, update
+from sqlalchemy import Select, delete, func, select, update
 from app.common.context import AppContext
 from app.common.enum.group_member_status import GroupMemberInvitationStatus
+from app.common.enum.user_roles import GroupRole
 from app.common.middleware.logger import Logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +61,62 @@ class GroupMembersRepository:
         except Exception as e:
             logger.error(f"Error in getting group members: {e}")
             raise e
+
+    async def update_group_member_role(
+        self,
+        session: AsyncSession,
+        member_id: UUID,
+        group_id: UUID,
+        role: GroupRole,
+        ctx: AppContext,
+    ) -> GroupMembers | None:
+        """Update the role of an accepted group membership."""
+        try:
+            stmt = (
+                update(GroupMembers)
+                .where(
+                    GroupMembers.member_id == member_id,
+                    GroupMembers.group_id == group_id,
+                    GroupMembers.invitation_status
+                    == GroupMemberInvitationStatus.ACCEPTED,
+                )
+                .values(role=role)
+                .returning(GroupMembers)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(
+                msg=f"Update group member role repository: Exception: {e}",
+                context=ctx,
+            )
+            raise
+
+    async def hard_delete_group_member(
+        self,
+        session: AsyncSession,
+        member_id: UUID,
+        group_id: UUID,
+        ctx: AppContext,
+    ) -> GroupMembers | None:
+        """Hard-delete a membership row regardless of invitation status."""
+        try:
+            stmt = (
+                delete(GroupMembers)
+                .where(
+                    GroupMembers.member_id == member_id,
+                    GroupMembers.group_id == group_id,
+                )
+                .returning(GroupMembers)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(
+                msg=f"Hard delete group member repository: Exception: {e}",
+                context=ctx,
+            )
+            raise
 
     async def list_group_members_by_ids(
         self,
@@ -298,3 +355,15 @@ class GroupMembersRepository:
                 msg=f"Error in getting group member in Redis: {e}", context=ctx
             )
             raise e
+
+    async def delete_group_member_redis(
+        self, group_id: UUID, member_id: UUID, ctx: AppContext
+    ) -> None:
+        """Evict the cached membership after a hard delete."""
+        try:
+            await self._redis_client.delete(f"{member_id}:{group_id}")
+        except Exception as e:
+            logger.error(
+                msg=f"Error deleting group member from Redis: {e}", context=ctx
+            )
+            raise

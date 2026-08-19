@@ -1,7 +1,12 @@
 from typing import List
 from fastapi import APIRouter, status
 from app.common.schemas.common import BaseResponse, HashMapResponse, PaginationBaseResponse
-from app.common.schemas.group import GroupInvitationInfo, GroupInfo, GroupMemberListInfo
+from app.common.schemas.group import (
+    GroupInvitationInfo,
+    GroupInfo,
+    GroupMemberInfo,
+    GroupMemberListInfo,
+)
 from app.handler.group import GroupHandler
 
 
@@ -90,6 +95,25 @@ class GroupRouter:
             status_code=status.HTTP_201_CREATED,
             summary="Invite members to a group",
             description="Add existing active or pending users and queue group invitation emails.",
+        )
+
+        self.router.add_api_route(
+            path="/{group_id}/members/{member_id}",
+            endpoint=self.handler.update_group_member,
+            methods=["PUT"],
+            response_model=BaseResponse[GroupMemberInfo],
+            status_code=status.HTTP_200_OK,
+            summary="Update a group member role",
+            description="Update an accepted group member role as an Owner or Admin.",
+        )
+
+        self.router.add_api_route(
+            path="/{group_id}/members/{member_id}",
+            endpoint=self.handler.delete_group_member,
+            methods=["DELETE"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            summary="Remove a group member",
+            description="Hard-delete a manageable group membership as an Owner or Admin.",
         )
 
         self.router.add_api_route(
