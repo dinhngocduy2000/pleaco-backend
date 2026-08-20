@@ -8,6 +8,8 @@ from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
+    from app.models.map import Map
+    from app.models.robot import Robot
     from app.models.user import User
 
 
@@ -43,3 +45,5 @@ class Group(Base):
     members: Mapped[List["GroupMembers"]] = relationship(  # type: ignore
         "GroupMembers", back_populates="group"
     )
+    maps: Mapped[List["Map"]] = relationship("Map", back_populates="group")
+    robots: Mapped[List["Robot"]] = relationship("Robot", back_populates="group")
