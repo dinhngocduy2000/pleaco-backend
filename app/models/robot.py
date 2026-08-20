@@ -12,10 +12,12 @@ from app.common.enum.robot import (
     RobotOperationalStatus,
 )
 from app.core.database import Base
+from app.models.robot_tags import robot_tags
 
 if TYPE_CHECKING:
     from app.models.group import Group
     from app.models.map import Map
+    from app.models.tag import Tag
 
 
 class Robot(Base):
@@ -78,3 +80,6 @@ class Robot(Base):
 
     group: Mapped["Group"] = relationship("Group", back_populates="robots")
     map: Mapped["Map | None"] = relationship("Map", back_populates="robots")
+    tags: Mapped[list["Tag"]] = relationship(
+        "Tag", secondary=robot_tags, back_populates="robots"
+    )
