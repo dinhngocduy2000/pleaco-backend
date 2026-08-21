@@ -21,15 +21,18 @@ from app.external.queues.topics.user_verification import UserVerificationTopic
 from app.external.queues.topics.add_group_member import AddGroupMemberTopic
 from app.external.redis.redis import RedisClient
 from app.handler.auth import AuthHandler
+from app.handler.bot import BotHandler
 from app.handler.group import GroupHandler
 from app.handler.mail import MailHandler
 from app.handler.user import UserHandler
 from app.repository.registry import Registry
 from app.router.auth import AuthRouter
+from app.router.bot import BotRouter
 from app.router.group import GroupRouter
 from app.router.mail import MailRouter
 from app.router.user import UserRouter
 from app.services.auth import AuthService
+from app.services.bot import BotService
 from app.services.group import GroupService
 from app.services.user import UserService
 
@@ -72,6 +75,10 @@ class App:
                 permission_service=permission_service,
                 add_group_member_topic=add_group_member_topic,
             )
+            bot_service = BotService(
+                repo=registry,
+                permission_service=permission_service,
+            )
             self.application.state.group_invitation_expiry_task = asyncio.create_task(
                 group_service.run_invitation_expiry_reconciler(),
                 name="group-invitation-expiry-reconciler",
@@ -83,12 +90,14 @@ class App:
             auth_handler = AuthHandler(service=auth_service)
             mail_handler = MailHandler(service=mail_service)
             group_handler = GroupHandler(service=group_service)
+            bot_handler = BotHandler(service=bot_service)
 
             # ------------ Router ------------
             user_router = UserRouter(handler=user_handler)
             auth_router = AuthRouter(handler=auth_handler)
             mail_router = MailRouter(handler=mail_handler)
             group_router = GroupRouter(handler=group_handler)
+            bot_router = BotRouter(handler=bot_handler)
             self.application.include_router(
                 user_router.router,
                 prefix=settings.API_V1_PREFIX + "/users",
@@ -108,6 +117,11 @@ class App:
                 group_router.router,
                 prefix=settings.API_V1_PREFIX + "/groups",
                 tags=["Groups"],
+            )
+            self.application.include_router(
+                bot_router.router,
+                prefix=settings.API_V1_PREFIX + "/bots",
+                tags=["Bots"],
             )
 
         return start_app

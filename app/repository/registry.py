@@ -6,6 +6,7 @@ from app.external.redis.redis import RedisClient
 from app.repository.group import GroupRepository
 from app.repository.group_members import GroupMembersRepository
 from app.repository.group_invitations import GroupInvitationRepository
+from app.repository.bot import BotRepository
 from app.repository.user import UserRepository
 
 
@@ -16,12 +17,15 @@ class Registry:
     _group_repo: GroupRepository
     _group_members_repo: GroupMembersRepository
     _group_invitation_repo: GroupInvitationRepository
+    _bot_repo: BotRepository
+
     def __init__(self, pg_engine: AsyncEngine, redis_client: RedisClient) -> None:
         self._pg_engine = pg_engine
         self._user_repo = UserRepository(redis_client=redis_client)
         self._group_repo = GroupRepository(redis_client=redis_client)
         self._group_members_repo = GroupMembersRepository(redis_client=redis_client)
         self._group_invitation_repo = GroupInvitationRepository(redis_client=redis_client)
+        self._bot_repo = BotRepository()
         self._redis_client = redis_client
 
     async def transaction_wrapper(self, tx_func: Callable[[AsyncSession], T]) -> T:
@@ -51,3 +55,6 @@ class Registry:
 
     def group_invitation_repo(self) -> GroupInvitationRepository:
         return self._group_invitation_repo
+
+    def bot_repo(self) -> BotRepository:
+        return self._bot_repo

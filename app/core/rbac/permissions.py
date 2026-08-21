@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_EVENT,
+    CREATE_BOT,
     DELETE_EVENT,
     DELETE_GROUP,
     EDIT_MEMBER,
@@ -36,6 +37,7 @@ ROLE_HIERACHY = [
 
 ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
+        CREATE_BOT,
         CREATE_EVENT,
         DELETE_EVENT,
         UPDATE_EVENT,
@@ -62,6 +64,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         # Action.CONFIG_NOTIFICATION,
     },
     GroupRole.ADMIN: {
+        CREATE_BOT,
         EDIT_GROUP_SETTINGS,
         INVITE_MEMBER,
         EDIT_MEMBER,
@@ -84,6 +87,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         # Action.CONFIG_NOTIFICATION,
     },
     GroupRole.MODERATOR: {
+        CREATE_BOT,
         # MEMBER ROLES
         CREATE_EVENT,
         VOTE_EVENT,
