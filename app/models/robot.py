@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, UniqueConstraint, desc, func
 from sqlalchemy.dialects.postgresql import INET, UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,6 +24,12 @@ class Robot(Base):
     __tablename__ = "robots"
     __table_args__ = (
         UniqueConstraint("group_id", "serial_num", name="uq_robots_group_serial_num"),
+        Index(
+            "ix_robots_group_model_created_at",
+            "group_id",
+            "model",
+            desc("created_at"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
