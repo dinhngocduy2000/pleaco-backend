@@ -1,16 +1,75 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
-from app.common.schemas.bot import BotCreateDomain
+from app.common.schemas.bot import BotCreateDomain, BotListQuery
+from app.models.map import Map
 from app.models.robot import Robot
+from app.models.robot_tags import robot_tags
 from app.models.tag import Tag
 
 
 class BotRepository:
+    async def list_bots(
+        self, session: AsyncSession, query: BotListQuery, ctx: AppContext
+    ) -> tuple[list[dict], int]:
+        """Return a filtered page of bots and its group-scoped total."""
+        columns = (
+            Map.name.label("map_name"),
+            Robot.serial_num,
+            Robot.model,
+            Robot.ip_address,
+            Robot.operational_status,
+            Robot.created_at,
+            Robot.connection_status,
+        )
+        stmt = (
+            select(*columns)
+            .select_from(Robot)
+            .outerjoin(
+                Map,
+                and_(Robot.map_id == Map.id, Map.group_id == Robot.group_id),
+            )
+        )
+        count_stmt = select(func.count(func.distinct(Robot.id))).select_from(Robot)
+
+        if query.tag_ids:
+            stmt = stmt.join(robot_tags, robot_tags.c.robot_id == Robot.id)
+            count_stmt = count_stmt.join(robot_tags, robot_tags.c.robot_id == Robot.id)
+
+        filters = [Robot.group_id == query.group_id]
+        if query.search is not None:
+            search_pattern = f"%{query.search}%"
+            filters.append(
+                or_(
+                    Robot.name.ilike(search_pattern),
+                    Robot.serial_num.ilike(search_pattern),
+                )
+            )
+        if query.model is not None:
+            filters.append(Robot.model == query.model)
+        if query.operational_status is not None:
+            filters.append(Robot.operational_status == query.operational_status)
+        if query.connection_status is not None:
+            filters.append(Robot.connection_status == query.connection_status)
+        if query.tag_ids:
+            filters.append(robot_tags.c.tag_id.in_(query.tag_ids))
+
+        stmt = (
+            stmt.where(*filters)
+            .order_by(Robot.created_at.desc(), Robot.id.asc())
+            .offset((query.page - 1) * query.page_size)
+            .limit(query.page_size)
+        )
+        count_stmt = count_stmt.where(*filters)
+
+        result = await session.execute(stmt)
+        total = (await session.execute(count_stmt)).scalar_one()
+        return [dict(row) for row in result.mappings().all()], total
+
     async def get_by_group_and_serial(
         self, session: AsyncSession, group_id: UUID, serial_num: str, ctx: AppContext
     ) -> Robot | None:

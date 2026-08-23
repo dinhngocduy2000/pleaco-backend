@@ -2,7 +2,16 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, UniqueConstraint, desc, func
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    desc,
+    func,
+)
 from sqlalchemy.dialects.postgresql import INET, UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,6 +38,18 @@ class Robot(Base):
             "group_id",
             "model",
             desc("created_at"),
+        ),
+        Index(
+            "ix_robots_name_trgm",
+            "name",
+            postgresql_using="gin",
+            postgresql_ops={"name": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_robots_serial_num_trgm",
+            "serial_num",
+            postgresql_using="gin",
+            postgresql_ops={"serial_num": "gin_trgm_ops"},
         ),
     )
 

@@ -11,7 +11,7 @@ from app.common.enum.context_actions import (
     EDIT_MEMBER,
     EDIT_GROUP_SETTINGS,
     INVITE_MEMBER,
-    LIST_CALENDAR_EVENTS,
+    LIST_BOTS,
     LIST_GROUP_MEMBERS,
     LOCK_EVENT,
     PROMOTE_TO_ADMIN,
@@ -38,6 +38,7 @@ ROLE_HIERACHY = [
 ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
         CREATE_BOT,
+        LIST_BOTS,
         CREATE_EVENT,
         DELETE_EVENT,
         UPDATE_EVENT,
@@ -50,7 +51,6 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         EDIT_MEMBER,
         REMOVE_MEMBER,
         PROMOTE_TO_ADMIN,
-        LIST_CALENDAR_EVENTS,
         LIST_GROUP_MEMBERS,
         # Action.VIEW_COST_DASHBOARD,
         # Action.SET_REMINDER,
@@ -65,6 +65,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     },
     GroupRole.ADMIN: {
         CREATE_BOT,
+        LIST_BOTS,
         EDIT_GROUP_SETTINGS,
         INVITE_MEMBER,
         EDIT_MEMBER,
@@ -73,7 +74,6 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         DELETE_EVENT,
         UPDATE_EVENT,
         VOTE_EVENT,
-        LIST_CALENDAR_EVENTS,
         LIST_GROUP_MEMBERS,
         LOCK_EVENT,
         # Action.SET_REMINDER,
@@ -88,10 +88,10 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     },
     GroupRole.MODERATOR: {
         CREATE_BOT,
+        LIST_BOTS,
         # MEMBER ROLES
         CREATE_EVENT,
         VOTE_EVENT,
-        LIST_CALENDAR_EVENTS,
         # Action.UPLOAD_MEMORY,
         # Action.LIKE_COMMENT,
         # Action.EXPORT_PDF,
@@ -106,9 +106,9 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         # Action.DELETE_MESSAGE,
     },
     GroupRole.MEMBER: {
+        LIST_BOTS,
         CREATE_EVENT,
         VOTE_EVENT,
-        LIST_CALENDAR_EVENTS,
         # Action.LIKE_COMMENT,
         # Action.UPLOAD_MEMORY,
         # Action.LIKE_COMMENT,
@@ -116,7 +116,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         # Action.SEND_MESSAGE,
     },
     GroupRole.GUEST: {
-        LIST_CALENDAR_EVENTS,
+        LIST_BOTS,
     },
 }
 

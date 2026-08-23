@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 
-from app.common.schemas.bot import BotInfo
-from app.common.schemas.common import BaseResponse
+from app.common.schemas.bot import BotInfo, BotListInfo
+from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.handler.bot import BotHandler
 
 
@@ -9,6 +9,15 @@ class BotRouter:
     def __init__(self, handler: BotHandler) -> None:
         self.router = APIRouter(prefix="", tags=["Bots"])
         self.handler = handler
+        self.router.add_api_route(
+            path="",
+            endpoint=self.handler.list_bots,
+            methods=["GET"],
+            response_model=PaginationBaseResponse[BotListInfo],
+            status_code=status.HTTP_200_OK,
+            summary="List group bots",
+            description="List bots for a group the caller is an accepted member of.",
+        )
         self.router.add_api_route(
             path="",
             endpoint=self.handler.create_bot,
