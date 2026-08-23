@@ -3,11 +3,11 @@ from uuid import uuid4
 from fastapi import Depends
 
 from app.common.context import AppContext
-from app.common.enum.context_actions import CREATE_BOT
+from app.common.enum.context_actions import CREATE_BOT, LIST_BOTS
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
-from app.common.schemas.bot import BotCreateDTO, BotInfo
-from app.common.schemas.common import BaseResponse
+from app.common.schemas.bot import BotCreateDTO, BotInfo, BotListInfo, BotListQuery
+from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.common.schemas.user import Credential
 from app.services.bot import BotService
 
@@ -33,4 +33,24 @@ class BotHandler:
             data=bot,
             message="Bot created",
             statusCode=201,
+        )
+
+    @exception_handler
+    async def list_bots(
+        self,
+        query: BotListQuery = Depends(),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> PaginationBaseResponse[BotListInfo]:
+        ctx = AppContext(trace_id=uuid4(), action=LIST_BOTS, actor=credential.id)
+        bots, total = await self.service.list_bots(
+            query=query,
+            group_id=query.group_id,
+            credential=credential,
+            ctx=ctx,
+        )
+        return PaginationBaseResponse[BotListInfo](
+            total=total,
+            page=query.page,
+            page_size=query.page_size,
+            items=bots,
         )

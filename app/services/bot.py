@@ -5,7 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.user_roles import GroupRole
 from app.common.exceptions import BadRequestException, NotFoundException
-from app.common.schemas.bot import BotCreateDTO, BotCreateDomain, BotInfo
+from app.common.schemas.bot import (
+    BotCreateDTO,
+    BotCreateDomain,
+    BotInfo,
+    BotListInfo,
+    BotListQuery,
+)
 from app.common.schemas.tags import TagInfo
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
@@ -66,6 +72,34 @@ class BotService:
             return self._to_bot_info(bot)
 
         return await self.repo.transaction_wrapper(_create_bot)
+
+    @require_permission(GroupRole.GUEST)
+    async def list_bots(
+        self,
+        query: BotListQuery,
+        group_id: UUID,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> tuple[list[BotListInfo], int]:
+        async def _list_bots(session: AsyncSession) -> tuple[list[BotListInfo], int]:
+            rows, total = await self.repo.bot_repo().list_bots(
+                session=session, query=query, ctx=ctx
+            )
+            return [
+                BotListInfo.model_validate(
+                    {
+                        **row,
+                        "ip_address": (
+                            str(row["ip_address"])
+                            if row["ip_address"] is not None
+                            else None
+                        ),
+                    }
+                )
+                for row in rows
+            ], total
+
+        return await self.repo.transaction_wrapper(_list_bots)
 
     @staticmethod
     def _to_bot_info(bot: Robot) -> BotInfo:

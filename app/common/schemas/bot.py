@@ -8,6 +8,7 @@ from app.common.enum.robot import (
     RobotModel,
     RobotOperationalStatus,
 )
+from app.common.schemas.common import PaginationBaseRequest
 from app.common.schemas.tags import TagInfo
 
 
@@ -16,9 +17,7 @@ class BotCreateDTO(BaseModel):
 
     group_id: UUID = Field(..., description="Group that owns the bot")
     name: str = Field(..., min_length=1, description="Bot name")
-    serial_num: str = Field(
-        ..., min_length=1, description="Manufacturer serial number"
-    )
+    serial_num: str = Field(..., min_length=1, description="Manufacturer serial number")
     model: RobotModel = Field(..., description="Bot model")
     map_id: UUID | None = Field(None, description="Reserved map assignment")
     ip_address: IPvAnyAddress | None = Field(
@@ -59,3 +58,45 @@ class BotInfo(BaseModel):
     tags: list[TagInfo]
     created_at: datetime
     updated_at: datetime
+
+
+class BotListQuery(PaginationBaseRequest):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    group_id: UUID = Field(..., description="Group that owns the bots")
+    search: str | None = Field(
+        None,
+        min_length=1,
+        description="Case-insensitive search across bot name and serial number",
+    )
+    model: RobotModel | None = Field(None, description="Bot model filter")
+    operational_status: RobotOperationalStatus | None = Field(
+        None, description="Operational-status filter"
+    )
+    connection_status: RobotConnectionStatus | None = Field(
+        None, description="Connection-status filter"
+    )
+    tag_ids: list[UUID] | None = Field(
+        None, description="Return bots with at least one of these tag IDs"
+    )
+
+    @field_validator("tag_ids")
+    @classmethod
+    def tag_ids_must_be_unique(cls, tag_ids: list[UUID] | None) -> list[UUID] | None:
+        if tag_ids is not None and len(tag_ids) != len(set(tag_ids)):
+            raise ValueError("Tag identifiers must be unique")
+        return tag_ids
+
+
+class BotListInfo(BaseModel):
+    map_name: str | None = Field(None, description="Assigned map name")
+    serial_num: str = Field(..., description="Manufacturer serial number")
+    model: RobotModel = Field(..., description="Bot model")
+    ip_address: str | None = Field(None, description="Bot IP address")
+    operational_status: RobotOperationalStatus = Field(
+        ..., description="Current operational status"
+    )
+    created_at: datetime = Field(..., description="Bot creation time")
+    connection_status: RobotConnectionStatus = Field(
+        ..., description="Current connection status"
+    )
