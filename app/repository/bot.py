@@ -19,6 +19,7 @@ class BotRepository:
         """Return a filtered page of bots and its group-scoped total."""
         columns = (
             Map.name.label("map_name"),
+            Robot.name,
             Robot.serial_num,
             Robot.model,
             Robot.ip_address,

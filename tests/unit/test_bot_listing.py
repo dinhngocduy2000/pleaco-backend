@@ -56,6 +56,7 @@ class BotRepositoryStub:
         return [
             {
                 "map_name": None,
+                "name": "Scrubber 01",
                 "serial_num": "SN-001",
                 "model": RobotModel.PRO,
                 "ip_address": "192.168.1.15",
@@ -105,6 +106,7 @@ async def test_all_accepted_group_roles_can_list_bots(role: GroupRole) -> None:
     )
 
     assert total == 1
+    assert bots[0].name == "Scrubber 01"
     assert bots[0].serial_num == "SN-001"
     assert bots[0].map_name is None
 

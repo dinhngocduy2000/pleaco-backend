@@ -90,6 +90,7 @@ class BotListQuery(PaginationBaseRequest):
 
 class BotListInfo(BaseModel):
     map_name: str | None = Field(None, description="Assigned map name")
+    name: str = Field(..., description="Bot name")
     serial_num: str = Field(..., description="Manufacturer serial number")
     model: RobotModel = Field(..., description="Bot model")
     ip_address: str | None = Field(None, description="Bot IP address")
