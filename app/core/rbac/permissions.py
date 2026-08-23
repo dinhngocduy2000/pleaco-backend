@@ -4,19 +4,14 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
-    CREATE_EVENT,
     CREATE_BOT,
-    DELETE_EVENT,
     DELETE_GROUP,
     EDIT_MEMBER,
     EDIT_GROUP_SETTINGS,
     INVITE_MEMBER,
     LIST_BOTS,
     LIST_GROUP_MEMBERS,
-    LOCK_EVENT,
     PROMOTE_TO_ADMIN,
-    UPDATE_EVENT,
-    VOTE_EVENT,
     TRANSFER_OWNERSHIP,
     REMOVE_MEMBER,
 )
@@ -39,12 +34,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
         CREATE_BOT,
         LIST_BOTS,
-        CREATE_EVENT,
-        DELETE_EVENT,
-        UPDATE_EVENT,
         DELETE_GROUP,
-        VOTE_EVENT,
-        LOCK_EVENT,
         TRANSFER_OWNERSHIP,
         EDIT_GROUP_SETTINGS,
         INVITE_MEMBER,
@@ -52,16 +42,6 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         REMOVE_MEMBER,
         PROMOTE_TO_ADMIN,
         LIST_GROUP_MEMBERS,
-        # Action.VIEW_COST_DASHBOARD,
-        # Action.SET_REMINDER,
-        # Action.UPLOAD_MEMORY,
-        # Action.LIKE_COMMENT,
-        # Action.SET_PRIVACY,
-        # Action.DELETE_MEMORY,
-        # Action.EXPORT_PDF,
-        # Action.SEND_MESSAGE,
-        # Action.DELETE_MESSAGE,
-        # Action.CONFIG_NOTIFICATION,
     },
     GroupRole.ADMIN: {
         CREATE_BOT,
@@ -70,50 +50,14 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         INVITE_MEMBER,
         EDIT_MEMBER,
         REMOVE_MEMBER,
-        CREATE_EVENT,
-        DELETE_EVENT,
-        UPDATE_EVENT,
-        VOTE_EVENT,
         LIST_GROUP_MEMBERS,
-        LOCK_EVENT,
-        # Action.SET_REMINDER,
-        # Action.UPLOAD_MEMORY,
-        # Action.LIKE_COMMENT,
-        # Action.SET_PRIVACY,
-        # Action.DELETE_MEMORY,
-        # Action.EXPORT_PDF,
-        # Action.SEND_MESSAGE,
-        # Action.DELETE_MESSAGE,
-        # Action.CONFIG_NOTIFICATION,
     },
     GroupRole.MODERATOR: {
         CREATE_BOT,
         LIST_BOTS,
-        # MEMBER ROLES
-        CREATE_EVENT,
-        VOTE_EVENT,
-        # Action.UPLOAD_MEMORY,
-        # Action.LIKE_COMMENT,
-        # Action.EXPORT_PDF,
-        # Action.SEND_MESSAGE,
-        # ----------------- content moderation — this is what separates them from member
-        LOCK_EVENT,
-        UPDATE_EVENT,
-        DELETE_EVENT,
-        # Action.SET_REMINDER,
-        # Action.SET_PRIVACY,
-        # Action.DELETE_MEMORY,
-        # Action.DELETE_MESSAGE,
     },
     GroupRole.MEMBER: {
         LIST_BOTS,
-        CREATE_EVENT,
-        VOTE_EVENT,
-        # Action.LIKE_COMMENT,
-        # Action.UPLOAD_MEMORY,
-        # Action.LIKE_COMMENT,
-        # Action.EXPORT_PDF,
-        # Action.SEND_MESSAGE,
     },
     GroupRole.GUEST: {
         LIST_BOTS,
@@ -121,19 +65,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
 }
 
 
-OWN_ONLY_ACTIONS: set[str] = {
-    LOCK_EVENT,
-    UPDATE_EVENT,
-    DELETE_EVENT,
-    # Action.SET_REMINDER,
-    # Action.SET_PRIVACY,
-    # Action.DELETE_MEMORY,
-    # Action.DELETE_MESSAGE,
-    # Action.UPLOAD_MEMORY,
-    # Action.LIKE_COMMENT,
-    # Action.SET_PRIVACY,
-    # Action.DELETE_MEMORY,
-}
+OWN_ONLY_ACTIONS: set[str] = {}
 logger = Logger()
 
 
