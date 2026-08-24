@@ -55,6 +55,7 @@ class BotInfo(BaseModel):
     ip_address: str | None
     connection_status: RobotConnectionStatus
     operational_status: RobotOperationalStatus
+    last_seen_at: datetime | None
     tags: list[TagInfo]
     created_at: datetime
     updated_at: datetime
@@ -102,3 +103,4 @@ class BotListInfo(BaseModel):
     connection_status: RobotConnectionStatus = Field(
         ..., description="Current connection status"
     )
+    last_seen_at: datetime | None = Field(None, description="Most recent accepted device event")

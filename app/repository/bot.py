@@ -1,6 +1,8 @@
 from collections.abc import Sequence
 from uuid import UUID
 
+from datetime import datetime
+
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +28,7 @@ class BotRepository:
             Robot.operational_status,
             Robot.created_at,
             Robot.connection_status,
+            Robot.last_seen_at,
             Robot.id,
         )
         stmt = (
@@ -97,6 +100,35 @@ class BotRepository:
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_by_id(self, session: AsyncSession, bot_id: UUID, ctx: AppContext) -> Robot | None:
+        result = await session.execute(select(Robot).where(Robot.id == bot_id))
+        return result.scalar_one_or_none()
+
+    async def update_status(
+        self,
+        session: AsyncSession,
+        bot: Robot,
+        *,
+        ip_address: str | None,
+        connection_status,
+        operational_status,
+        last_seen_at: datetime,
+        last_sequence_number: int,
+        last_message_id: UUID,
+        ctx: AppContext,
+    ) -> Robot:
+        if ip_address is not None:
+            bot.ip_address = ip_address
+        if connection_status is not None:
+            bot.connection_status = connection_status
+        if operational_status is not None:
+            bot.operational_status = operational_status
+        bot.last_seen_at = last_seen_at
+        bot.last_sequence_number = last_sequence_number
+        bot.last_message_id = last_message_id
+        await session.flush()
+        return bot
 
     async def hard_delete_bot(
         self,

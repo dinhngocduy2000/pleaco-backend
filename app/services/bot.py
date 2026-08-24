@@ -158,6 +158,7 @@ class BotService:
             ip_address=str(bot.ip_address) if bot.ip_address is not None else None,
             connection_status=bot.connection_status,
             operational_status=bot.operational_status,
+            last_seen_at=bot.last_seen_at,
             tags=[
                 TagInfo(
                     id=tag.id,

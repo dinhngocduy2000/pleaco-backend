@@ -95,6 +95,13 @@ class Robot(Base):
         ),
         nullable=False,
     )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_sequence_number: Mapped[int | None] = mapped_column(nullable=True)
+    last_message_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQL_UUID(as_uuid=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

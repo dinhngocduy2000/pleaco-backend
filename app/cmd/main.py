@@ -19,6 +19,9 @@ from app.external.mail.mail import MailService
 from app.external.queues.queue import RabbitMQClient
 from app.external.queues.topics.user_verification import UserVerificationTopic
 from app.external.queues.topics.add_group_member import AddGroupMemberTopic
+from app.external.queues.topics.robot_status import RobotStatusTopic
+from app.external.mqtt.robot_status import RobotStatusMqttIngestion
+from app.external.realtime.robot_status import RobotStatusWebSocketManager
 from app.external.redis.redis import RedisClient
 from app.handler.auth import AuthHandler
 from app.handler.bot import BotHandler
@@ -31,10 +34,12 @@ from app.router.bot import BotRouter
 from app.router.group import GroupRouter
 from app.router.mail import MailRouter
 from app.router.user import UserRouter
+from app.router.realtime import RealtimeRouter
 from app.services.auth import AuthService
 from app.services.bot import BotService
 from app.services.group import GroupService
 from app.services.user import UserService
+from app.services.bot_status import BotStatusService
 
 
 class App:
@@ -54,12 +59,6 @@ class App:
             mail_service = MailService()
             verification_topic = UserVerificationTopic(rabbitmq_client, mail_service)
             add_group_member_topic = AddGroupMemberTopic(rabbitmq_client, mail_service)
-            await init_topics(
-                consumers={
-                    "verification-email": verification_topic.start_consumer,
-                    "group-member-invitation-email": add_group_member_topic.start_consumer,
-                }
-            )
 
             # ------------ Service ------------
             user_service = UserService(repo=registry)
@@ -70,6 +69,21 @@ class App:
                 verification_topic=verification_topic,
             )
             permission_service = PermissionService(repo=registry)
+            websocket_manager = RobotStatusWebSocketManager()
+            bot_status_service = BotStatusService(
+                repo=registry, websocket_manager=websocket_manager
+            )
+            robot_status_topic = RobotStatusTopic(rabbitmq_client, bot_status_service)
+            mqtt_ingestion = RobotStatusMqttIngestion(robot_status_topic)
+            self.application.state.mqtt_ingestion = mqtt_ingestion
+            await init_topics(
+                consumers={
+                    "verification-email": verification_topic.start_consumer,
+                    "group-member-invitation-email": add_group_member_topic.start_consumer,
+                    "robot-status": robot_status_topic.start_consumer,
+                }
+            )
+            await mqtt_ingestion.start()
             group_service = GroupService(
                 repo=registry,
                 permission_service=permission_service,
@@ -101,6 +115,7 @@ class App:
             mail_router = MailRouter(handler=mail_handler)
             group_router = GroupRouter(handler=group_handler)
             bot_router = BotRouter(handler=bot_handler)
+            realtime_router = RealtimeRouter(websocket_manager, permission_service)
             self.application.include_router(
                 user_router.router,
                 prefix=settings.API_V1_PREFIX + "/users",
@@ -126,6 +141,10 @@ class App:
                 prefix=settings.API_V1_PREFIX + "/bots",
                 tags=["Bots"],
             )
+            self.application.include_router(
+                realtime_router.router,
+                prefix=settings.API_V1_PREFIX,
+            )
 
         return start_app
 
@@ -139,6 +158,9 @@ class App:
                 expiry_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await expiry_task
+            mqtt_ingestion = getattr(self.application.state, "mqtt_ingestion", None)
+            if mqtt_ingestion is not None:
+                await mqtt_ingestion.stop()
             rabbitmq_client = getattr(self.application.state, "rabbitmq", None)
             if rabbitmq_client is not None:
                 await rabbitmq_client.close()
