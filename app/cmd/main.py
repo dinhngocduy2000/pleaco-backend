@@ -89,7 +89,10 @@ class App:
             user_handler = UserHandler(service=user_service)
             auth_handler = AuthHandler(service=auth_service)
             mail_handler = MailHandler(service=mail_service)
-            group_handler = GroupHandler(service=group_service)
+            group_handler = GroupHandler(
+                service=group_service,
+                auth_service=auth_service,
+            )
             bot_handler = BotHandler(service=bot_service)
 
             # ------------ Router ------------

@@ -23,6 +23,22 @@ from app.core.config import settings
 logger = Logger()
 
 
+REPLACE_HASHED_TOKEN_SCRIPT = """
+if redis.call("EXISTS", KEYS[1]) == 0 then
+    return 0
+end
+
+if KEYS[1] == KEYS[2] then
+    redis.call("EXPIRE", KEYS[1], ARGV[2])
+    return 1
+end
+
+redis.call("SET", KEYS[2], ARGV[1], "EX", ARGV[2])
+redis.call("DEL", KEYS[1])
+return 1
+"""
+
+
 class UserRepository:
     _redis_client: RedisClient
 
@@ -289,6 +305,30 @@ class UserRepository:
         except Exception as e:
             logger.error(msg=f"Delete token repository: Exception: {e}", context=ctx)
             raise e
+
+    async def replace_hashed_token(
+        self,
+        old_hashed_token: str,
+        new_hashed_token: str,
+        expire: int,
+        ctx: AppContext,
+    ) -> bool:
+        """Atomically replace a cached token hash while preserving its TTL."""
+        try:
+            old_key = f"{settings.cache_token_hash}:{old_hashed_token}"
+            new_key = f"{settings.cache_token_hash}:{new_hashed_token}"
+            result = await self._redis_client.eval(
+                REPLACE_HASHED_TOKEN_SCRIPT,
+                2,
+                old_key,
+                new_key,
+                new_hashed_token,
+                expire,
+            )
+            return int(result) == 1
+        except Exception as e:
+            logger.error(msg=f"Replace token repository: Exception: {e}", context=ctx)
+            raise
 
     async def set_otp_code(self, email: str, otp_code: str, ctx: AppContext) -> None:
         try:

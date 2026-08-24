@@ -1,6 +1,6 @@
 from typing import Dict, List
 from uuid import UUID, uuid4
-from fastapi import Body, Depends, Path, Request
+from fastapi import Body, Depends, Path, Request, Response
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_GROUP,
@@ -14,6 +14,7 @@ from app.common.enum.context_actions import (
     SWITCH_CURRENT_USER_GROUP,
     VALIDATE_GROUP_INVITATION,
 )
+from app.common.exceptions import UnauthorizedException
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.middleware.logger import Logger
@@ -33,6 +34,7 @@ from app.common.schemas.group import (
     GroupMemberUpdate,
 )
 from app.common.schemas.user import Credential, SwitchGroupRequest
+from app.services.auth import AuthService
 from app.services.group import GroupService
 
 logger = Logger()
@@ -40,9 +42,11 @@ logger = Logger()
 
 class GroupHandler:
     service: GroupService
+    auth_service: AuthService
 
-    def __init__(self, service: GroupService) -> None:
+    def __init__(self, service: GroupService, auth_service: AuthService) -> None:
         self.service = service
+        self.auth_service = auth_service
 
     @exception_handler
     async def create_group(
@@ -133,6 +137,7 @@ class GroupHandler:
     async def switch_current_user_group(
         self,
         request: Request,
+        response: Response,
         input: SwitchGroupRequest,
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
     ) -> str:
@@ -145,6 +150,24 @@ class GroupHandler:
         )
         await self.service.switch_current_user_active_group(
             input, ctx=ctx, credential=credential
+        )
+        access_token = request.cookies.get("access_token")
+        if access_token is None:
+            raise UnauthorizedException("Unauthorized")
+        replacement_token, remaining_ttl = (
+            await self.auth_service.rotate_access_token_active_group(
+                access_token=access_token,
+                active_group_id=input.group_id,
+                ctx=ctx,
+            )
+        )
+        response.set_cookie(
+            key="access_token",
+            value=replacement_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=remaining_ttl,
         )
         logger.info(
             msg=f"Switch Current User Group Endpoint Finishes {request.url}; params: ${input};",
