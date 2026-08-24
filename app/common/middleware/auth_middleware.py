@@ -79,9 +79,8 @@ class AuthMiddleware:
             status=user_status,
             is_pending=is_pending,
             exp_time=exp_time,
+            active_group_id=active_group_id,
         )
-        if active_group_id is not None:
-            credential.active_group_id = active_group_id
 
         return credential
 

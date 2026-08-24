@@ -67,6 +67,12 @@ class Settings(BaseAppSettings):
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
     RABBITMQ_CONNECT_TIMEOUT: float = 10.0
 
+    # Device-facing MQTT / Mosquitto
+    MQTT_HOST: str = "localhost"
+    MQTT_PORT: int = 1883
+    MQTT_USERNAME: str = ""
+    MQTT_PASSWORD: str = ""
+
     # Google OAuth (for Sign in with Google)
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
