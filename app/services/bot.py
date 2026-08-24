@@ -3,8 +3,13 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
+from app.common.enum.robot import RobotOperationalStatus
 from app.common.enum.user_roles import GroupRole
-from app.common.exceptions import BadRequestException, NotFoundException
+from app.common.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from app.common.schemas.bot import (
     BotCreateDTO,
     BotCreateDomain,
@@ -100,6 +105,46 @@ class BotService:
             ], total
 
         return await self.repo.transaction_wrapper(_list_bots)
+
+    @require_permission(GroupRole.MODERATOR)
+    async def delete_bot(
+        self,
+        bot_id: UUID,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> None:
+        group_id = credential.active_group_id
+        if group_id is None:
+            raise ForbiddenException(message="A group must be selected")
+
+        async def _delete_bot(session: AsyncSession) -> None:
+            bot_repository = self.repo.bot_repo()
+            bot = await bot_repository.get_by_id_and_group_for_update(
+                session=session,
+                bot_id=bot_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if bot is None:
+                raise NotFoundException(message="Bot not found")
+            if bot.operational_status == RobotOperationalStatus.EXECUTING:
+                raise BadRequestException(
+                    message=(
+                        "Cannot delete a bot while it is executing; "
+                        "stop the operation or wait for it to finish"
+                    )
+                )
+
+            deleted_bot = await bot_repository.hard_delete_bot(
+                session=session,
+                bot_id=bot_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if deleted_bot is None:
+                raise NotFoundException(message="Bot not found")
+
+        await self.repo.transaction_wrapper(_delete_bot)
 
     @staticmethod
     def _to_bot_info(bot: Robot) -> BotInfo:

@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
@@ -26,6 +26,7 @@ class BotRepository:
             Robot.operational_status,
             Robot.created_at,
             Robot.connection_status,
+            Robot.id,
         )
         stmt = (
             select(*columns)
@@ -77,6 +78,38 @@ class BotRepository:
         stmt = select(Robot).where(
             Robot.group_id == group_id,
             Robot.serial_num == serial_num,
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_id_and_group_for_update(
+        self,
+        session: AsyncSession,
+        bot_id: UUID,
+        group_id: UUID,
+        ctx: AppContext,
+    ) -> Robot | None:
+        """Load an active-group bot with a row lock before deletion validation."""
+        stmt = (
+            select(Robot)
+            .where(Robot.id == bot_id, Robot.group_id == group_id)
+            .with_for_update()
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def hard_delete_bot(
+        self,
+        session: AsyncSession,
+        bot_id: UUID,
+        group_id: UUID,
+        ctx: AppContext,
+    ) -> Robot | None:
+        """Hard-delete a bot scoped to its owning group."""
+        stmt = (
+            delete(Robot)
+            .where(Robot.id == bot_id, Robot.group_id == group_id)
+            .returning(Robot)
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()

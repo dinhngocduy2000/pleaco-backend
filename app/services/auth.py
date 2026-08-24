@@ -1,4 +1,5 @@
 import asyncio
+from math import ceil
 import secrets
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -167,6 +168,58 @@ class AuthService:
             user, settings.ACCESS_TOKEN_EXPIRE_SECONDS)
         payload["token_type"] = "access"
         return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+    async def rotate_access_token_active_group(
+        self,
+        access_token: str,
+        active_group_id: UUID,
+        ctx: AppContext,
+    ) -> tuple[str, int]:
+        """Replace an access token with an equivalent token for a new active group.
+
+        The original expiration is intentionally retained so changing groups cannot
+        extend an authenticated session.
+        """
+        try:
+            payload = jwt.decode(
+                access_token,
+                settings.SECRET_KEY,
+                algorithms=[settings.ALGORITHM],
+            )
+            if payload.get("token_type") != "access":
+                raise UnauthorizedException("Unauthorized")
+
+            expires_at = payload.get("exp")
+            if isinstance(expires_at, bool) or not isinstance(
+                expires_at, (int, float)
+            ):
+                raise UnauthorizedException("Unauthorized")
+            remaining_ttl = ceil(expires_at - datetime.now(timezone.utc).timestamp())
+            if remaining_ttl <= 0:
+                raise UnauthorizedException("Unauthorized")
+
+            payload["active_group_id"] = str(active_group_id)
+            replacement_token = jwt.encode(
+                payload,
+                settings.SECRET_KEY,
+                algorithm=settings.ALGORITHM,
+            )
+            old_hashed_token = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+            new_hashed_token = hashlib.sha256(
+                replacement_token.encode("utf-8")
+            ).hexdigest()
+            replaced = await self.repo.user_repo().replace_hashed_token(
+                old_hashed_token=old_hashed_token,
+                new_hashed_token=new_hashed_token,
+                expire=remaining_ttl,
+                ctx=ctx,
+            )
+            if not replaced:
+                raise UnauthorizedException("Unauthorized")
+            return replacement_token, remaining_ttl
+        except jwt.InvalidTokenError as e:
+            logger.error(msg="Access token rotation failed", context=ctx)
+            raise UnauthorizedException("Unauthorized") from e
 
     def _generate_refresh_token(self, user: UserInfo) -> str:
         """Issue a signed refresh token for a user profile.
