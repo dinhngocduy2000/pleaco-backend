@@ -42,7 +42,7 @@ def require_permission(
                 minimum_role
             ):
                 logger.error(
-                    msg="This user doesn't have the sufficent role hierachy",
+                    msg=f"This user doesn't have the sufficent role hierachy {group_member.role}",
                     context=ctx,
                 )
                 raise ForbiddenException(

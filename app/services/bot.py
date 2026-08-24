@@ -111,9 +111,9 @@ class BotService:
         self,
         bot_id: UUID,
         credential: Credential,
+        group_id: str,
         ctx: AppContext,
     ) -> None:
-        group_id = credential.active_group_id
         if group_id is None:
             raise ForbiddenException(message="A group must be selected")
 
@@ -142,7 +142,7 @@ class BotService:
                 ctx=ctx,
             )
             if deleted_bot is None:
-                raise NotFoundException(message="Bot not found")
+                raise NotFoundException(message="Bot not found in the current group")
 
         await self.repo.transaction_wrapper(_delete_bot)
 

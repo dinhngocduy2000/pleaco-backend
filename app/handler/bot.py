@@ -66,4 +66,5 @@ class BotHandler:
             bot_id=bot_id,
             credential=credential,
             ctx=ctx,
+            group_id=credential.active_group_id,
         )
