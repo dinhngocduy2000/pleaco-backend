@@ -1,9 +1,9 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from fastapi import Depends
+from fastapi import Depends, Path
 
 from app.common.context import AppContext
-from app.common.enum.context_actions import CREATE_BOT, LIST_BOTS
+from app.common.enum.context_actions import CREATE_BOT, DELETE_BOT, LIST_BOTS
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.bot import BotCreateDTO, BotInfo, BotListInfo, BotListQuery
@@ -53,4 +53,17 @@ class BotHandler:
             page=query.page,
             page_size=query.page_size,
             items=bots,
+        )
+
+    @exception_handler
+    async def delete_bot(
+        self,
+        bot_id: UUID = Path(..., description="Bot id"),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> None:
+        ctx = AppContext(trace_id=uuid4(), action=DELETE_BOT, actor=credential.id)
+        await self.service.delete_bot(
+            bot_id=bot_id,
+            credential=credential,
+            ctx=ctx,
         )

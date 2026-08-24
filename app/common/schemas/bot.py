@@ -89,6 +89,7 @@ class BotListQuery(PaginationBaseRequest):
 
 
 class BotListInfo(BaseModel):
+    id: UUID = Field(..., description="ID of the bot")
     map_name: str | None = Field(None, description="Assigned map name")
     name: str = Field(..., description="Bot name")
     serial_num: str = Field(..., description="Manufacturer serial number")

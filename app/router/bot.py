@@ -27,3 +27,11 @@ class BotRouter:
             summary="Create a bot",
             description="Create a bot in a group the caller is authorized to manage.",
         )
+        self.router.add_api_route(
+            path="/{bot_id}",
+            endpoint=self.handler.delete_bot,
+            methods=["DELETE"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            summary="Delete a bot",
+            description="Hard-delete a non-executing bot in the caller's active group.",
+        )
