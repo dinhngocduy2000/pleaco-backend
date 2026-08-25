@@ -146,14 +146,6 @@ class BotRepository:
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_tags_by_ids(
-        self, session: AsyncSession, tag_ids: Sequence[UUID], ctx: AppContext
-    ) -> list[Tag]:
-        if not tag_ids:
-            return []
-        result = await session.execute(select(Tag).where(Tag.id.in_(tag_ids)))
-        return list(result.scalars().all())
-
     async def create_bot(
         self,
         session: AsyncSession,

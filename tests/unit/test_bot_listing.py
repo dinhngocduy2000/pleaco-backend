@@ -19,7 +19,9 @@ from app.common.schemas.bot import BotListQuery
 from app.common.schemas.group import GroupMemberInfo
 from app.common.schemas.user import Credential
 from app.repository.bot import BotRepository
+from app.repository.robot_tags import RobotTagsRepository
 from app.services.bot import BotService
+from app.models.tag import Tag
 
 
 def _ctx(actor_id=None) -> AppContext:
@@ -52,9 +54,13 @@ class PermissionServiceStub:
 
 
 class BotRepositoryStub:
+    def __init__(self) -> None:
+        self.bot_id = uuid4()
+
     async def list_bots(self, **kwargs):
         return [
             {
+                "id": self.bot_id,
                 "map_name": None,
                 "name": "Scrubber 01",
                 "serial_num": "SN-001",
@@ -63,14 +69,36 @@ class BotRepositoryStub:
                 "operational_status": RobotOperationalStatus.IDLE,
                 "created_at": datetime.now(timezone.utc),
                 "connection_status": RobotConnectionStatus.ONLINE,
+                "last_seen_at": None,
             }
         ], 1
 
 
+class RobotTagsRepositoryStub:
+    def __init__(self) -> None:
+        self.tag_id = uuid4()
+
+    async def get_by_robot_ids(self, *, robot_ids, group_id, **kwargs):
+        now = datetime.now(timezone.utc)
+        tag = Tag(
+            id=self.tag_id,
+            group_id=group_id,
+            name="Operations",
+            color="#336699",
+            description="Operational robots",
+        )
+        tag.created_at = now
+        tag.updated_at = now
+        return {robot_id: [tag] for robot_id in robot_ids}
+
+
 def _service(role: GroupRole | None) -> BotService:
+    bot_repository = BotRepositoryStub()
+    robot_tags_repository = RobotTagsRepositoryStub()
     return BotService(
         repo=SimpleNamespace(
-            bot_repo=lambda: BotRepositoryStub(),
+            bot_repo=lambda: bot_repository,
+            robot_tags_repo=lambda: robot_tags_repository,
             transaction_wrapper=lambda callback: callback(SimpleNamespace()),
         ),
         permission_service=PermissionServiceStub(role),
@@ -109,6 +137,7 @@ async def test_all_accepted_group_roles_can_list_bots(role: GroupRole) -> None:
     assert bots[0].name == "Scrubber 01"
     assert bots[0].serial_num == "SN-001"
     assert bots[0].map_name is None
+    assert [tag.name for tag in bots[0].tags] == ["Operations"]
 
 
 @pytest.mark.asyncio
@@ -149,6 +178,16 @@ class SessionStub:
         return ResultStub(total=0)
 
 
+class RobotTagsSessionStub:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return ResultStub(rows=self.rows)
+
+
 @pytest.mark.asyncio
 async def test_repository_applies_list_filters_pagination_and_distinct_count() -> None:
     group_id = uuid4()
@@ -179,3 +218,47 @@ async def test_repository_applies_list_filters_pagination_and_distinct_count() -
     assert "LIMIT" in page_statement and "OFFSET" in page_statement
     assert "count(distinct(robots.id))" in count_statement
     assert "ORDER BY" not in count_statement
+
+
+@pytest.mark.asyncio
+async def test_robot_tags_repository_returns_group_scoped_tags_by_robot() -> None:
+    group_id = uuid4()
+    robot_id = uuid4()
+    tag = Tag(
+        id=uuid4(),
+        group_id=group_id,
+        name="Operations",
+        color="#336699",
+        description=None,
+    )
+    session = RobotTagsSessionStub(rows=[(robot_id, tag)])
+
+    result = await RobotTagsRepository().get_by_robot_ids(
+        session=session,
+        robot_ids=[robot_id],
+        group_id=group_id,
+        ctx=_ctx(),
+    )
+
+    statement = str(session.statements[0])
+    assert result == {robot_id: [tag]}
+    assert "JOIN robots" in statement
+    assert "JOIN tags" in statement
+    assert "robot_tags.robot_id" in statement
+    assert "robots.group_id" in statement
+    assert "tags.group_id" in statement
+
+
+@pytest.mark.asyncio
+async def test_robot_tags_repository_skips_query_for_no_bots() -> None:
+    session = RobotTagsSessionStub(rows=[])
+
+    result = await RobotTagsRepository().get_by_robot_ids(
+        session=session,
+        robot_ids=[],
+        group_id=uuid4(),
+        ctx=_ctx(),
+    )
+
+    assert result == {}
+    assert session.statements == []

@@ -40,6 +40,7 @@ class BotService:
     ) -> BotInfo:
         async def _create_bot(session: AsyncSession) -> BotInfo:
             bot_repository = self.repo.bot_repo()
+            tag_repository = self.repo.tag_repo()
             existing_bot = await bot_repository.get_by_group_and_serial(
                 session=session,
                 group_id=group_id,
@@ -51,8 +52,11 @@ class BotService:
                     message="A bot with this serial number already exists in this group"
                 )
 
-            tags = await bot_repository.get_tags_by_ids(
-                session=session, tag_ids=bot_create.tags, ctx=ctx
+            tags = await tag_repository.get_by_ids_and_group(
+                session=session,
+                tag_ids=bot_create.tags,
+                group_id=group_id,
+                ctx=ctx,
             )
             if len(tags) != len(bot_create.tags):
                 raise NotFoundException(message="One or more tags were not found")
@@ -90,6 +94,12 @@ class BotService:
             rows, total = await self.repo.bot_repo().list_bots(
                 session=session, query=query, ctx=ctx
             )
+            tags_by_robot = await self.repo.robot_tags_repo().get_by_robot_ids(
+                session=session,
+                robot_ids=[row["id"] for row in rows],
+                group_id=group_id,
+                ctx=ctx,
+            )
             return [
                 BotListInfo.model_validate(
                     {
@@ -99,6 +109,17 @@ class BotService:
                             if row["ip_address"] is not None
                             else None
                         ),
+                        "tags": [
+                            TagInfo(
+                                id=tag.id,
+                                name=tag.name,
+                                color=tag.color,
+                                description=tag.description,
+                                created_at=tag.created_at,
+                                updated_at=tag.updated_at,
+                            )
+                            for tag in tags_by_robot.get(row["id"], [])
+                        ],
                     }
                 )
                 for row in rows
