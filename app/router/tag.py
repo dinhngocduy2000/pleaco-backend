@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 
 from app.common.schemas.common import BaseResponse
-from app.common.schemas.tags import TagListInfo
+from app.common.schemas.tags import TagInfo, TagListInfo
 from app.handler.tag import TagHandler
 
 
@@ -17,4 +17,13 @@ class TagRouter:
             status_code=status.HTTP_200_OK,
             summary="List group tags",
             description="List tags for a group the caller is an accepted member of.",
+        )
+        self.router.add_api_route(
+            path="",
+            endpoint=self.handler.create_tag,
+            methods=["POST"],
+            response_model=BaseResponse[TagInfo],
+            status_code=status.HTTP_201_CREATED,
+            summary="Create a group tag",
+            description="Create a tag in a group the caller is authorized to manage.",
         )

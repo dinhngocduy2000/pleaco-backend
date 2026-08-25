@@ -9,6 +9,33 @@ from app.models.tag import Tag
 
 
 class TagRepository:
+    async def get_by_group_and_name(
+        self, session: AsyncSession, group_id: UUID, name: str, ctx: AppContext
+    ) -> Tag | None:
+        result = await session.execute(
+            select(Tag).where(Tag.group_id == group_id, Tag.name == name)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_tag(
+        self,
+        session: AsyncSession,
+        group_id: UUID,
+        name: str,
+        description: str | None,
+        color: str,
+        ctx: AppContext,
+    ) -> Tag:
+        tag = Tag(
+            group_id=group_id,
+            name=name,
+            description=description,
+            color=color,
+        )
+        session.add(tag)
+        await session.flush()
+        return tag
+
     async def list_by_group(
         self, session: AsyncSession, group_id: UUID, ctx: AppContext
     ) -> list[Tag]:

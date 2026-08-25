@@ -135,7 +135,7 @@ async def test_repository_filters_and_orders_tags_by_group() -> None:
 
 
 def test_tag_router_declares_unpaginated_list_response() -> None:
-    handler = SimpleNamespace(list_tags=lambda: None)
+    handler = SimpleNamespace(list_tags=lambda: None, create_tag=lambda: None)
     router = TagRouter(handler).router
     route = next(route for route in router.routes if route.path == "")
 
