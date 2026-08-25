@@ -107,3 +107,7 @@ class BotListInfo(BaseModel):
         ..., description="Current connection status"
     )
     last_seen_at: datetime | None = Field(None, description="Most recent accepted device event")
+    tags: list[TagInfo] = Field(
+        default_factory=list,
+        description="Tags assigned to the bot",
+    )

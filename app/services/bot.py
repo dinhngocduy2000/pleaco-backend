@@ -94,6 +94,12 @@ class BotService:
             rows, total = await self.repo.bot_repo().list_bots(
                 session=session, query=query, ctx=ctx
             )
+            tags_by_robot = await self.repo.robot_tags_repo().get_by_robot_ids(
+                session=session,
+                robot_ids=[row["id"] for row in rows],
+                group_id=group_id,
+                ctx=ctx,
+            )
             return [
                 BotListInfo.model_validate(
                     {
@@ -103,6 +109,17 @@ class BotService:
                             if row["ip_address"] is not None
                             else None
                         ),
+                        "tags": [
+                            TagInfo(
+                                id=tag.id,
+                                name=tag.name,
+                                color=tag.color,
+                                description=tag.description,
+                                created_at=tag.created_at,
+                                updated_at=tag.updated_at,
+                            )
+                            for tag in tags_by_robot.get(row["id"], [])
+                        ],
                     }
                 )
                 for row in rows
