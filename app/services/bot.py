@@ -40,6 +40,7 @@ class BotService:
     ) -> BotInfo:
         async def _create_bot(session: AsyncSession) -> BotInfo:
             bot_repository = self.repo.bot_repo()
+            tag_repository = self.repo.tag_repo()
             existing_bot = await bot_repository.get_by_group_and_serial(
                 session=session,
                 group_id=group_id,
@@ -51,8 +52,11 @@ class BotService:
                     message="A bot with this serial number already exists in this group"
                 )
 
-            tags = await bot_repository.get_tags_by_ids(
-                session=session, tag_ids=bot_create.tags, ctx=ctx
+            tags = await tag_repository.get_by_ids_and_group(
+                session=session,
+                tag_ids=bot_create.tags,
+                group_id=group_id,
+                ctx=ctx,
             )
             if len(tags) != len(bot_create.tags):
                 raise NotFoundException(message="One or more tags were not found")

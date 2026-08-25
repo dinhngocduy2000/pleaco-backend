@@ -1,8 +1,7 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, func
-from app.common.schemas.tags import TagInfo
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from app.core.database import Base
 from app.models.map_tags import map_tags
 from app.models.robot_tags import robot_tags
@@ -11,17 +10,25 @@ from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
+    from app.models.group import Group
     from app.models.map import Map
     from app.models.robot import Robot
 
 
 class Tag(Base):
     __tablename__ = "tags"
+    __table_args__ = (
+        UniqueConstraint("group_id", "name", name="uq_tags_group_name"),
+    )
     id: Mapped[UUID] = mapped_column(
         PostgreSQL_UUID(as_uuid=True), primary_key=True, default=uuid4, nullable=False
     )
-    name: Mapped[str] = mapped_column(
-        String(50), nullable=False, unique=True, index=True
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    group_id: Mapped[UUID] = mapped_column(
+        PostgreSQL_UUID(as_uuid=True),
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -36,9 +43,10 @@ class Tag(Base):
     color: Mapped[str] = mapped_column(String(7), nullable=False)
     description: Mapped[str] = mapped_column(String(255), nullable=True)
 
-    maps: Mapped[List["Map"]] = relationship(
+    group: Mapped["Group"] = relationship("Group", back_populates="tags")
+    maps: Mapped[list["Map"]] = relationship(
         "Map", secondary=map_tags, back_populates="tags"
     )
-    robots: Mapped[List["Robot"]] = relationship(
+    robots: Mapped[list["Robot"]] = relationship(
         "Robot", secondary=robot_tags, back_populates="tags"
     )

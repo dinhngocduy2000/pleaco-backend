@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 if TYPE_CHECKING:
     from app.models.map import Map
     from app.models.robot import Robot
+    from app.models.tag import Tag
     from app.models.user import User
 
 
@@ -47,3 +48,4 @@ class Group(Base):
     )
     maps: Mapped[List["Map"]] = relationship("Map", back_populates="group")
     robots: Mapped[List["Robot"]] = relationship("Robot", back_populates="group")
+    tags: Mapped[List["Tag"]] = relationship("Tag", back_populates="group")

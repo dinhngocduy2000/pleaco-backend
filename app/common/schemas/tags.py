@@ -11,3 +11,9 @@ class TagInfo(BaseModel):
     description: Optional[str] = Field(None, description="Tag's description")
     created_at: datetime = Field(None, description="Tag's created at")
     updated_at: datetime = Field(None, description="Tag's updated at")
+
+
+class TagListInfo(BaseModel):
+    id: UUID = Field(..., description="Tag's id")
+    name: str = Field(..., description="Tag's name")
+    color: str = Field(..., description="Tag's color")

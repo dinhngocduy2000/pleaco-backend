@@ -24,15 +24,11 @@ from app.services.bot import BotService
 
 
 class BotRepositoryStub:
-    def __init__(self, tags: list[Tag]) -> None:
-        self.tags = {tag.id: tag for tag in tags}
+    def __init__(self) -> None:
         self.bots: dict[tuple[UUID, str], Robot] = {}
 
     async def get_by_group_and_serial(self, *, group_id, serial_num, **kwargs):
         return self.bots.get((group_id, serial_num))
-
-    async def get_tags_by_ids(self, *, tag_ids, **kwargs):
-        return [self.tags[tag_id] for tag_id in tag_ids if tag_id in self.tags]
 
     async def create_bot(self, *, bot_create, tags, **kwargs):
         now = datetime.now(timezone.utc)
@@ -52,6 +48,18 @@ class BotRepositoryStub:
         bot.updated_at = now
         self.bots[(bot.group_id, bot.serial_num)] = bot
         return bot
+
+
+class TagRepositoryStub:
+    def __init__(self, tags: list[Tag]) -> None:
+        self.tags = {tag.id: tag for tag in tags}
+
+    async def get_by_ids_and_group(self, *, tag_ids, group_id, **kwargs):
+        return [
+            self.tags[tag_id]
+            for tag_id in tag_ids
+            if tag_id in self.tags and self.tags[tag_id].group_id == group_id
+        ]
 
 
 class PermissionServiceStub:
@@ -79,9 +87,15 @@ class PermissionServiceStub:
         }
 
 
-def _tag() -> Tag:
+def _tag(group_id: UUID) -> Tag:
     now = datetime.now(timezone.utc)
-    tag = Tag(id=uuid4(), name="Operations", color="#336699", description=None)
+    tag = Tag(
+        id=uuid4(),
+        group_id=group_id,
+        name="Operations",
+        color="#336699",
+        description=None,
+    )
     tag.created_at = now
     tag.updated_at = now
     return tag
@@ -105,9 +119,11 @@ def _request(group_id: UUID, tag_ids: list[UUID], **overrides) -> BotCreateDTO:
 
 
 def _service(role: GroupRole | None, tags: list[Tag]) -> tuple[BotService, BotRepositoryStub]:
-    bot_repository = BotRepositoryStub(tags)
+    bot_repository = BotRepositoryStub()
+    tag_repository = TagRepositoryStub(tags)
     registry = SimpleNamespace(
         bot_repo=lambda: bot_repository,
+        tag_repo=lambda: tag_repository,
         transaction_wrapper=lambda callback: callback(SimpleNamespace()),
     )
     return BotService(registry, PermissionServiceStub(role)), bot_repository
@@ -131,9 +147,9 @@ def test_bot_create_schema_rejects_duplicate_tags_and_unknown_fields() -> None:
     "role", [GroupRole.OWNER, GroupRole.ADMIN, GroupRole.MODERATOR]
 )
 async def test_authorized_roles_create_bot_with_provisioning_defaults(role: GroupRole) -> None:
-    tag = _tag()
-    service, _ = _service(role, [tag])
     group_id = uuid4()
+    tag = _tag(group_id)
+    service, _ = _service(role, [tag])
 
     result = await service.create_bot(
         bot_create=_request(group_id, [tag.id]),
@@ -152,9 +168,9 @@ async def test_authorized_roles_create_bot_with_provisioning_defaults(role: Grou
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", [GroupRole.MEMBER, GroupRole.GUEST, None])
 async def test_unprivileged_or_non_member_callers_cannot_create_bots(role) -> None:
-    tag = _tag()
-    service, _ = _service(role, [tag])
     group_id = uuid4()
+    tag = _tag(group_id)
+    service, _ = _service(role, [tag])
 
     with pytest.raises(ForbiddenException):
         await service.create_bot(
@@ -167,28 +183,29 @@ async def test_unprivileged_or_non_member_callers_cannot_create_bots(role) -> No
 
 @pytest.mark.asyncio
 async def test_serial_number_is_unique_within_a_group_only() -> None:
-    tag = _tag()
-    service, _ = _service(GroupRole.ADMIN, [tag])
     credential = _credential()
     first_group_id = uuid4()
+    second_group_id = uuid4()
+    first_tag = _tag(first_group_id)
+    second_tag = _tag(second_group_id)
+    service, _ = _service(GroupRole.ADMIN, [first_tag, second_tag])
 
     await service.create_bot(
-        bot_create=_request(first_group_id, [tag.id]),
+        bot_create=_request(first_group_id, [first_tag.id]),
         group_id=first_group_id,
         credential=credential,
         ctx=_ctx(),
     )
     with pytest.raises(BadRequestException, match="serial number already exists"):
         await service.create_bot(
-            bot_create=_request(first_group_id, [tag.id]),
+            bot_create=_request(first_group_id, [first_tag.id]),
             group_id=first_group_id,
             credential=credential,
             ctx=_ctx(),
         )
 
-    second_group_id = uuid4()
     result = await service.create_bot(
-        bot_create=_request(second_group_id, [tag.id]),
+        bot_create=_request(second_group_id, [second_tag.id]),
         group_id=second_group_id,
         credential=credential,
         ctx=_ctx(),
@@ -204,6 +221,22 @@ async def test_missing_tag_rejects_bot_creation() -> None:
     with pytest.raises(NotFoundException, match="tags were not found"):
         await service.create_bot(
             bot_create=_request(group_id, [uuid4()]),
+            group_id=group_id,
+            credential=_credential(),
+            ctx=_ctx(),
+        )
+    assert repository.bots == {}
+
+
+@pytest.mark.asyncio
+async def test_tag_from_another_group_rejects_bot_creation() -> None:
+    tag = _tag(uuid4())
+    service, repository = _service(GroupRole.ADMIN, [tag])
+    group_id = uuid4()
+
+    with pytest.raises(NotFoundException, match="tags were not found"):
+        await service.create_bot(
+            bot_create=_request(group_id, [tag.id]),
             group_id=group_id,
             credential=_credential(),
             ctx=_ctx(),

@@ -27,6 +27,7 @@ from app.handler.auth import AuthHandler
 from app.handler.bot import BotHandler
 from app.handler.group import GroupHandler
 from app.handler.mail import MailHandler
+from app.handler.tag import TagHandler
 from app.handler.user import UserHandler
 from app.repository.registry import Registry
 from app.router.auth import AuthRouter
@@ -35,9 +36,11 @@ from app.router.group import GroupRouter
 from app.router.mail import MailRouter
 from app.router.user import UserRouter
 from app.router.realtime import RealtimeRouter
+from app.router.tag import TagRouter
 from app.services.auth import AuthService
 from app.services.bot import BotService
 from app.services.group import GroupService
+from app.services.tag import TagService
 from app.services.user import UserService
 from app.services.bot_status import BotStatusService
 
@@ -93,6 +96,10 @@ class App:
                 repo=registry,
                 permission_service=permission_service,
             )
+            tag_service = TagService(
+                repo=registry,
+                permission_service=permission_service,
+            )
             self.application.state.group_invitation_expiry_task = asyncio.create_task(
                 group_service.run_invitation_expiry_reconciler(),
                 name="group-invitation-expiry-reconciler",
@@ -108,6 +115,7 @@ class App:
                 auth_service=auth_service,
             )
             bot_handler = BotHandler(service=bot_service)
+            tag_handler = TagHandler(service=tag_service)
 
             # ------------ Router ------------
             user_router = UserRouter(handler=user_handler)
@@ -115,6 +123,7 @@ class App:
             mail_router = MailRouter(handler=mail_handler)
             group_router = GroupRouter(handler=group_handler)
             bot_router = BotRouter(handler=bot_handler)
+            tag_router = TagRouter(handler=tag_handler)
             realtime_router = RealtimeRouter(websocket_manager, permission_service)
             self.application.include_router(
                 user_router.router,
@@ -140,6 +149,11 @@ class App:
                 bot_router.router,
                 prefix=settings.API_V1_PREFIX + "/bots",
                 tags=["Bots"],
+            )
+            self.application.include_router(
+                tag_router.router,
+                prefix=settings.API_V1_PREFIX + "/tags",
+                tags=["Tags"],
             )
             self.application.include_router(
                 realtime_router.router,
