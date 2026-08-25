@@ -23,7 +23,10 @@ class BotCreateDTO(BaseModel):
     ip_address: IPvAnyAddress | None = Field(
         None, description="Bot IPv4 or IPv6 address"
     )
-    tags: list[UUID] = Field(..., description="Existing tag identifiers")
+    tags: list[UUID] = Field(
+        default_factory=list,
+        description="Existing tag identifiers",
+    )
 
     @field_validator("tags")
     @classmethod

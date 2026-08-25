@@ -105,17 +105,21 @@ def _credential() -> Credential:
     return Credential(id=uuid4(), email="operator@example.com", status=UserStatus.ACTIVE)
 
 
-def _request(group_id: UUID, tag_ids: list[UUID], **overrides) -> BotCreateDTO:
-    return BotCreateDTO(
-        group_id=group_id,
-        name="Scrubber 01",
-        serial_num="SN-001",
-        model=RobotModel.STANDARD,
-        map_id=uuid4(),
-        ip_address="192.168.1.15",
-        tags=tag_ids,
-        **overrides,
-    )
+def _request(
+    group_id: UUID, tag_ids: list[UUID] | None = None, **overrides
+) -> BotCreateDTO:
+    payload = {
+        "group_id": group_id,
+        "name": "Scrubber 01",
+        "serial_num": "SN-001",
+        "model": RobotModel.STANDARD,
+        "map_id": uuid4(),
+        "ip_address": "192.168.1.15",
+    }
+    if tag_ids is not None:
+        payload["tags"] = tag_ids
+    payload.update(overrides)
+    return BotCreateDTO(**payload)
 
 
 def _service(role: GroupRole | None, tags: list[Tag]) -> tuple[BotService, BotRepositoryStub]:
@@ -136,10 +140,29 @@ def _ctx() -> AppContext:
 def test_bot_create_schema_rejects_duplicate_tags_and_unknown_fields() -> None:
     group_id = uuid4()
     tag_id = uuid4()
+    assert _request(group_id).tags == []
     with pytest.raises(ValidationError, match="Tag identifiers must be unique"):
         _request(group_id, [tag_id, tag_id])
     with pytest.raises(ValidationError):
         _request(group_id, [], unexpected="value")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tag_ids", [None, []])
+async def test_bot_create_with_omitted_or_empty_tags_creates_an_untagged_bot(
+    tag_ids: list[UUID] | None,
+) -> None:
+    group_id = uuid4()
+    service, _ = _service(GroupRole.ADMIN, [])
+
+    result = await service.create_bot(
+        bot_create=_request(group_id, tag_ids),
+        group_id=group_id,
+        credential=_credential(),
+        ctx=_ctx(),
+    )
+
+    assert result.tags == []
 
 
 @pytest.mark.asyncio
