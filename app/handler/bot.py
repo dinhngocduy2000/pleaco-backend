@@ -1,15 +1,18 @@
 from uuid import UUID, uuid4
 
-from fastapi import Depends, Path
+from fastapi import Depends, Path, Query
 
 from app.common.context import AppContext
 from app.common.enum.context_actions import CREATE_BOT, DELETE_BOT, LIST_BOTS
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
+from app.common.middleware.logger import Logger
 from app.common.schemas.bot import BotCreateDTO, BotInfo, BotListInfo, BotListQuery
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.common.schemas.user import Credential
 from app.services.bot import BotService
+
+logger = Logger()
 
 
 class BotHandler:
@@ -38,10 +41,11 @@ class BotHandler:
     @exception_handler
     async def list_bots(
         self,
-        query: BotListQuery = Depends(),
+        query: BotListQuery = Query(),
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
     ) -> PaginationBaseResponse[BotListInfo]:
         ctx = AppContext(trace_id=uuid4(), action=LIST_BOTS, actor=credential.id)
+        logger.info(query.tag_ids)
         bots, total = await self.service.list_bots(
             query=query,
             group_id=query.group_id,

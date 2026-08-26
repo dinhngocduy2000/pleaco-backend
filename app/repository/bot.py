@@ -3,7 +3,7 @@ from uuid import UUID
 
 from datetime import datetime
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
@@ -41,10 +41,6 @@ class BotRepository:
         )
         count_stmt = select(func.count(func.distinct(Robot.id))).select_from(Robot)
 
-        if query.tag_ids:
-            stmt = stmt.join(robot_tags, robot_tags.c.robot_id == Robot.id)
-            count_stmt = count_stmt.join(robot_tags, robot_tags.c.robot_id == Robot.id)
-
         filters = [Robot.group_id == query.group_id]
         if query.search is not None:
             search_pattern = f"%{query.search}%"
@@ -61,7 +57,16 @@ class BotRepository:
         if query.connection_status is not None:
             filters.append(Robot.connection_status == query.connection_status)
         if query.tag_ids:
-            filters.append(robot_tags.c.tag_id.in_(query.tag_ids))
+            filters.append(
+                exists(
+                    select(1)
+                    .where(
+                        robot_tags.c.robot_id == Robot.id,
+                        robot_tags.c.tag_id.in_(query.tag_ids),
+                    )
+                    .correlate(Robot)
+                )
+            )
 
         stmt = (
             stmt.where(*filters)
@@ -101,7 +106,9 @@ class BotRepository:
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_by_id(self, session: AsyncSession, bot_id: UUID, ctx: AppContext) -> Robot | None:
+    async def get_by_id(
+        self, session: AsyncSession, bot_id: UUID, ctx: AppContext
+    ) -> Robot | None:
         result = await session.execute(select(Robot).where(Robot.id == bot_id))
         return result.scalar_one_or_none()
 
