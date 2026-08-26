@@ -2,7 +2,7 @@ import datetime
 from typing import List, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Select, delete, func, select, update
+from sqlalchemy import Select, delete, select, tuple_, update
 from app.common.context import AppContext
 from app.common.enum.group_member_status import GroupMemberInvitationStatus
 from app.common.enum.user_roles import GroupRole
@@ -14,6 +14,7 @@ from app.models.group_members import GroupMembers
 from app.models.user import User
 from app.common.enum.user_status import UserStatus
 from app.common.schemas.group import GroupInvitationInfo, GroupMemberListQuery
+from app.common.schemas.common import CursorPayload
 
 logger = Logger()
 
@@ -277,41 +278,46 @@ class GroupMembersRepository:
         if query.status is not None:
             stmt = stmt.where(User.status == query.status)
 
-        order_column = (
-            User.name if query.order_by.value == "name" else GroupMembers.created_at
-        )
-        order = (
-            order_column.asc()
-            if query.order_direction.value == "asc"
-            else order_column.desc()
-        )
-        return stmt.order_by(order, GroupMembers.member_id.asc())
+        return stmt
 
     async def list_group_members(
         self,
         session: AsyncSession,
         query: GroupMemberListQuery,
         ctx: AppContext,
-    ) -> tuple[list[tuple[GroupMembers, User]], int]:
-        """Return a filtered page of non-deleted group members and its total."""
+        cursor: CursorPayload | None = None,
+    ) -> tuple[list[tuple[GroupMembers, User]], bool]:
+        """Return a filtered keyset page and availability in its query direction."""
         try:
             base_stmt = select(GroupMembers, User).join(
                 User, GroupMembers.member_id == User.id
             )
             stmt = self._prepare_list_query(query, base_stmt)
-            stmt = stmt.offset((query.page - 1) * query.page_size).limit(
-                query.page_size
-            )
-            result = await session.execute(stmt)
+            is_backward = query.before is not None
 
-            count_stmt = (
-                select(func.count())
-                .select_from(GroupMembers)
-                .join(User, GroupMembers.member_id == User.id)
-            )
-            count_stmt = self._prepare_list_query(query, count_stmt).order_by(None)
-            total = (await session.execute(count_stmt)).scalar_one()
-            return list(result.all()), total
+            if cursor is not None:
+                row_key = tuple_(GroupMembers.created_at, GroupMembers.member_id)
+                cursor_key = tuple_(cursor.created_at, cursor.id)
+                stmt = stmt.where(
+                    row_key > cursor_key if is_backward else row_key < cursor_key
+                )
+
+            if is_backward:
+                stmt = stmt.order_by(
+                    GroupMembers.created_at.asc(), GroupMembers.member_id.asc()
+                )
+            else:
+                stmt = stmt.order_by(
+                    GroupMembers.created_at.desc(), GroupMembers.member_id.desc()
+                )
+
+            result = await session.execute(stmt.limit(query.limit + 1))
+            rows = list(result.all())
+            has_more = len(rows) > query.limit
+            rows = rows[: query.limit]
+            if is_backward:
+                rows.reverse()
+            return rows, has_more
         except Exception as e:
             logger.error(
                 msg=f"List group members repository: Exception: {e}", context=ctx

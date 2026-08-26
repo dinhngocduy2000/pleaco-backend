@@ -21,7 +21,7 @@ from app.common.middleware.logger import Logger
 from app.common.schemas.common import (
     BaseResponse,
     HashMapResponse,
-    PaginationBaseResponse,
+    CursorPaginationResponse,
 )
 from app.common.schemas.group import (
     GroupCreateDTO,
@@ -116,21 +116,19 @@ class GroupHandler:
         self,
         query: GroupMemberListQuery = Depends(),
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
-    ) -> PaginationBaseResponse[GroupMemberListInfo]:
+    ) -> CursorPaginationResponse[GroupMemberListInfo]:
         ctx = AppContext(
             trace_id=uuid4(), action=LIST_GROUP_MEMBERS, actor=credential.id
         )
-        members, total = await self.service.list_group_members(
+        members, pagination = await self.service.list_group_members(
             query=query,
             group_id=query.group_id,
             credential=credential,
             ctx=ctx,
         )
-        return PaginationBaseResponse[GroupMemberListInfo](
-            total=total,
-            page=query.page,
-            page_size=query.page_size,
+        return CursorPaginationResponse[GroupMemberListInfo](
             items=members,
+            **pagination.model_dump(),
         )
 
     @exception_handler

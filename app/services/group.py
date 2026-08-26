@@ -13,7 +13,11 @@ from app.common.exceptions import (
     NotFoundException,
 )
 from app.common.middleware.logger import Logger
-from app.common.schemas.common import HashMapResponse
+from app.common.schemas.common import (
+    CursorPaginationMetadata,
+    CursorPayload,
+    HashMapResponse,
+)
 from app.common.schemas.group import (
     GroupCreateDTO,
     GroupCreateDomain,
@@ -30,6 +34,7 @@ from app.common.schemas.user import Credential, SwitchGroupRequest, UserInfo, Us
 from app.core.rbac.permissions import ROLE_HIERACHY, PermissionService
 from app.core.rbac.role_validation import require_permission
 from app.core.config import settings
+from app.common.utils.cursor_pagination import decode_cursor, encode_cursor
 from app.external.queues.topics.add_group_member import (
     AddGroupMemberMessage,
     AddGroupMemberTopic,
@@ -792,17 +797,25 @@ class GroupService:
         credential: Credential,
         ctx: AppContext,
         group_id: UUID | None = None,
-    ) -> tuple[List[GroupMemberListInfo], int]:
-        """Return an authorized, filtered page of group memberships."""
+    ) -> tuple[List[GroupMemberListInfo], CursorPaginationMetadata]:
+        """Return an authorized, filtered cursor page of group memberships."""
+
+        cursor = None
+        cursor_token = query.before or query.after
+        if cursor_token is not None:
+            try:
+                cursor = decode_cursor(cursor_token)
+            except ValueError as exc:
+                raise BadRequestException(message="Invalid pagination cursor") from exc
 
         async def _list_group_members(
             session: AsyncSession,
-        ) -> tuple[List[GroupMemberListInfo], int]:
+        ) -> tuple[List[GroupMemberListInfo], CursorPaginationMetadata]:
             await self._validate_group_exists(query.group_id, session, ctx)
-            rows, total = await self.repo.group_members_repo().list_group_members(
-                session=session, query=query, ctx=ctx
+            rows, has_more = await self.repo.group_members_repo().list_group_members(
+                session=session, query=query, cursor=cursor, ctx=ctx
             )
-            return [
+            members = [
                 GroupMemberListInfo(
                     member_id=member.member_id,
                     image_url=user.image_url,
@@ -814,7 +827,56 @@ class GroupService:
                     invitation_status=member.invitation_status,
                 )
                 for member, user in rows
-            ], total
+            ]
+
+            if not rows:
+                return members, CursorPaginationMetadata(
+                    limit=query.limit,
+                    next_cursor=None,
+                    previous_cursor=None,
+                    has_next=False,
+                    has_previous=False,
+                )
+
+            if query.before is not None:
+                has_previous = has_more
+                has_next = True
+            elif query.after is not None:
+                has_previous = True
+                has_next = has_more
+            else:
+                has_previous = False
+                has_next = has_more
+
+            first_member = rows[0][0]
+            last_member = rows[-1][0]
+            previous_cursor = (
+                encode_cursor(
+                    CursorPayload(
+                        created_at=first_member.created_at,
+                        id=first_member.member_id,
+                    )
+                )
+                if has_previous
+                else None
+            )
+            next_cursor = (
+                encode_cursor(
+                    CursorPayload(
+                        created_at=last_member.created_at,
+                        id=last_member.member_id,
+                    )
+                )
+                if has_next
+                else None
+            )
+            return members, CursorPaginationMetadata(
+                limit=query.limit,
+                next_cursor=next_cursor,
+                previous_cursor=previous_cursor,
+                has_next=has_next,
+                has_previous=has_previous,
+            )
 
         return await self.repo.transaction_wrapper(_list_group_members)
 

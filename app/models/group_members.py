@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, desc, func
 from app.common.enum.group_member_status import GroupMemberInvitationStatus
 from app.common.enum.user_roles import GroupRole
 from app.core.database import Base
@@ -11,6 +11,14 @@ from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 
 class GroupMembers(Base):
     __tablename__ = "group_members"
+    __table_args__ = (
+        Index(
+            "ix_group_members_group_created_at_member_id",
+            "group_id",
+            desc("created_at"),
+            desc("member_id"),
+        ),
+    )
 
     member_id: Mapped[UUID] = mapped_column(
         PostgreSQL_UUID(as_uuid=True),

@@ -1,6 +1,10 @@
 from typing import List
 from fastapi import APIRouter, status
-from app.common.schemas.common import BaseResponse, HashMapResponse, PaginationBaseResponse
+from app.common.schemas.common import (
+    BaseResponse,
+    CursorPaginationResponse,
+    HashMapResponse,
+)
 from app.common.schemas.group import (
     GroupInvitationInfo,
     GroupInfo,
@@ -62,19 +66,21 @@ class GroupRouter:
             path="/members",
             endpoint=self.handler.list_group_members,
             methods=["GET"],
-            response_model=PaginationBaseResponse[GroupMemberListInfo],
+            response_model=CursorPaginationResponse[GroupMemberListInfo],
             status_code=status.HTTP_200_OK,
             summary="List group members",
             description=(
-                "List group members for group Owners and Admins.\n\n"
+                "List group members for group Owners and Admins, ordered by "
+                "`created_at DESC, member_id DESC`. Use `after` with a returned "
+                "`next_cursor` or `before` with a returned `previous_cursor`; "
+                "the cursor parameters are mutually exclusive. Restart without a "
+                "cursor when filters change.\n\n"
                 "Example query options:\n"
                 "```json\n"
                 "{\n"
                 '  "group_id": "550e8400-e29b-41d4-a716-446655440000",\n'
-                '  "page": 1,\n'
-                '  "page_size": 10,\n'
-                '  "order_by": "joined_date",\n'
-                '  "order_direction": "desc",\n'
+                '  "limit": 10,\n'
+                '  "after": "opaque-next-page-cursor",\n'
                 '  "email": "member@example.com",\n'
                 '  "role": "member",\n'
                 '  "status": "ACTIVE"\n'
@@ -82,7 +88,7 @@ class GroupRouter:
                 "```\n\n"
                 "Equivalent request: "
                 "`/members?group_id=550e8400-e29b-41d4-a716-446655440000"
-                "&page=1&page_size=10&order_by=joined_date&order_direction=desc"
+                "&limit=10&after=opaque-next-page-cursor"
                 "&email=member%40example.com&role=member&status=ACTIVE`"
             ),
         )
