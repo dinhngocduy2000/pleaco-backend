@@ -1,10 +1,12 @@
 from datetime import datetime
+from enum import Enum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.common.enum.map import MapStatus
-from app.common.schemas.tags import TagInfo
+from app.common.schemas.common import PaginationBaseRequest
+from app.common.schemas.tags import TagInfo, TagListInfo
 
 
 class MapCreateDTO(BaseModel):
@@ -42,3 +44,38 @@ class MapInfo(BaseModel):
     tags: list[TagInfo] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class MapOrderDirection(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class MapListQuery(PaginationBaseRequest):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    search: str | None = Field(
+        None, min_length=1, description="Case-insensitive map name search"
+    )
+    status: MapStatus | None = Field(None, description="Map assignment status")
+    tag_ids: list[UUID] | None = Field(
+        None, description="Return maps with at least one of these tag IDs"
+    )
+    order_direction: MapOrderDirection = Field(
+        MapOrderDirection.DESC, description="Creation-date ordering direction"
+    )
+
+    @field_validator("tag_ids")
+    @classmethod
+    def tag_ids_must_be_unique(cls, tag_ids: list[UUID] | None) -> list[UUID] | None:
+        if tag_ids is not None and len(tag_ids) != len(set(tag_ids)):
+            raise ValueError("Tag identifiers must be unique")
+        return tag_ids
+
+
+class MapListInfo(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    status: MapStatus
+    tags: list[TagListInfo] = Field(default_factory=list)

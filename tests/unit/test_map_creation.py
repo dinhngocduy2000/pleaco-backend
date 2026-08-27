@@ -352,7 +352,9 @@ async def test_repositories_scope_map_name_and_lock_robot_assignments() -> None:
 
 
 def test_router_declares_create_map_route() -> None:
-    router = MapRouter(SimpleNamespace(create_map=lambda: None)).router
+    router = MapRouter(
+        SimpleNamespace(create_map=lambda: None, list_maps=lambda: None)
+    ).router
     routes = {
         (route.path, tuple(sorted(route.methods))): route
         for route in router.routes

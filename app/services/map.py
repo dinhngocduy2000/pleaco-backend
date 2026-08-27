@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.map import MapStatus
 from app.common.enum.user_roles import GroupRole
-from app.common.exceptions import BadRequestException, NotFoundException
+from app.common.exceptions import BadRequestException, ForbiddenException, NotFoundException
 from app.common.middleware.logger import Logger
-from app.common.schemas.map import MapCreateDTO, MapInfo
-from app.common.schemas.tags import TagInfo
+from app.common.schemas.map import MapCreateDTO, MapInfo, MapListInfo, MapListQuery
+from app.common.schemas.tags import TagInfo, TagListInfo
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
@@ -174,6 +174,57 @@ class MapService:
                 message="One or more robots are already assigned to a map"
             )
         return robots
+
+    @require_permission(GroupRole.GUEST)
+    async def list_maps(
+        self,
+        query: MapListQuery,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> tuple[list[MapListInfo], int]:
+        """Return filtered maps visible in the caller's active group only."""
+        if group_id is None:
+            raise ForbiddenException(message="A group must be selected")
+
+        logger.info(
+            msg=(
+                f"Listing maps for group {group_id} with search={query.search!r}, "
+                f"status={query.status}, and {len(query.tag_ids or [])} tag filters"
+            ),
+            context=ctx,
+        )
+
+        async def _list_maps(session: AsyncSession) -> tuple[list[MapListInfo], int]:
+            rows, total = await self.repo.map_repo().list_maps(
+                session=session, query=query, group_id=group_id, ctx=ctx
+            )
+            tags_by_map = await self.repo.map_tags_repo().get_by_map_ids(
+                session=session,
+                map_ids=[row["id"] for row in rows],
+                group_id=group_id,
+                ctx=ctx,
+            )
+            maps = [
+                MapListInfo(
+                    id=row["id"],
+                    name=row["name"],
+                    description=row["description"],
+                    status=row["status"],
+                    tags=[
+                        TagListInfo(id=tag.id, name=tag.name, color=tag.color)
+                        for tag in tags_by_map.get(row["id"], [])
+                    ],
+                )
+                for row in rows
+            ]
+            logger.info(
+                msg=f"Listed {len(maps)} maps from {total} matching maps for group {group_id}",
+                context=ctx,
+            )
+            return maps, total
+
+        return await self.repo.transaction_wrapper(_list_maps)
 
     @staticmethod
     def _to_map_info(map_record: Map, robot_ids: list[UUID]) -> MapInfo:
