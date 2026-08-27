@@ -5,6 +5,7 @@ from app.common.types import T
 from app.external.redis.redis import RedisClient
 from app.repository.group import GroupRepository
 from app.repository.group_members import GroupMembersRepository
+from app.repository.map import MapRepository
 from app.repository.group_invitations import GroupInvitationRepository
 from app.repository.bot import BotRepository
 from app.repository.robot_tags import RobotTagsRepository
@@ -22,6 +23,7 @@ class Registry:
     _bot_repo: BotRepository
     _robot_tags_repo: RobotTagsRepository
     _tag_repo: TagRepository
+    _map_repo: MapRepository
 
     def __init__(self, pg_engine: AsyncEngine, redis_client: RedisClient) -> None:
         self._pg_engine = pg_engine
@@ -32,6 +34,7 @@ class Registry:
         self._bot_repo = BotRepository()
         self._robot_tags_repo = RobotTagsRepository()
         self._tag_repo = TagRepository()
+        self._map_repo = MapRepository()
         self._redis_client = redis_client
 
     async def transaction_wrapper(self, tx_func: Callable[[AsyncSession], T]) -> T:
@@ -70,3 +73,6 @@ class Registry:
 
     def tag_repo(self) -> TagRepository:
         return self._tag_repo
+
+    def map_repo(self) -> MapRepository:
+        return self._map_repo

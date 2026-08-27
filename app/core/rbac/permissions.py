@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_BOT,
+    CREATE_MAP,
     CREATE_TAG,
     DELETE_BOT,
     DELETE_GROUP,
@@ -37,6 +38,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
         CREATE_BOT,
         CREATE_TAG,
+        CREATE_MAP,
         DELETE_BOT,
         LIST_BOTS,
         LIST_TAGS,
@@ -52,6 +54,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.ADMIN: {
         CREATE_BOT,
         CREATE_TAG,
+        CREATE_MAP,
         DELETE_BOT,
         LIST_BOTS,
         LIST_TAGS,

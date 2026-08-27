@@ -112,6 +112,33 @@ class BotRepository:
         result = await session.execute(select(Robot).where(Robot.id == bot_id))
         return result.scalar_one_or_none()
 
+    async def get_by_ids_and_group_for_update(
+        self,
+        session: AsyncSession,
+        bot_ids: Sequence[UUID],
+        group_id: UUID,
+        ctx: AppContext,
+    ) -> list[Robot]:
+        if not bot_ids:
+            return []
+        result = await session.execute(
+            select(Robot)
+            .where(Robot.id.in_(bot_ids), Robot.group_id == group_id)
+            .with_for_update()
+        )
+        return list(result.scalars().all())
+
+    async def assign_map(
+        self,
+        session: AsyncSession,
+        robots: Sequence[Robot],
+        map_id: UUID,
+        ctx: AppContext,
+    ) -> None:
+        for robot in robots:
+            robot.map_id = map_id
+        await session.flush()
+
     async def update_status(
         self,
         session: AsyncSession,
