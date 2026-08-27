@@ -21,7 +21,15 @@ class MapRepository:
         ctx: AppContext,
     ) -> tuple[list[dict], int]:
         """Return a page of active-group maps and its filtered total."""
-        columns = (Map.id, Map.name, Map.description, Map.status, Map.created_at)
+        columns = (
+            Map.id,
+            Map.name,
+            Map.description,
+            Map.status,
+            Map.created_at,
+            Map.dimension_x,
+            Map.dimension_y,
+        )
         filters = [Map.group_id == group_id]
         if query.search is not None:
             filters.append(Map.name.ilike(f"%{query.search}%"))

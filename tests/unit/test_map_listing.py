@@ -70,6 +70,8 @@ class MapRepositoryStub:
                 "name": "Floor 1",
                 "description": "Main floor",
                 "status": MapStatus.UNASSIGNED,
+                "dimension_x": "20",
+                "dimension_y": "30",
             }
         ], 1
 
