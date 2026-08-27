@@ -41,8 +41,8 @@ def _request(group_id: UUID, **overrides) -> MapCreateDTO:
         "group_id": group_id,
         "name": "Floor 1",
         "description": "Main floor",
-        "dimension_x": "20m",
-        "dimension_y": "30m",
+        "dimension_x": "20",
+        "dimension_y": "30",
     }
     payload.update(overrides)
     return MapCreateDTO(**payload)
@@ -181,12 +181,19 @@ def test_map_create_schema_validates_input() -> None:
     for overrides in [
         {"name": ""},
         {"dimension_x": ""},
+        {"dimension_x": "twenty"},
+        {"dimension_y": "NaN"},
+        {"dimension_y": "Infinity"},
         {"robot_ids": [robot_id, robot_id]},
         {"tags": [tag_id, tag_id]},
         {"unexpected": "field"},
     ]:
         with pytest.raises(ValidationError):
             _request(group_id, **overrides)
+
+    numeric_dimensions = _request(group_id, dimension_x="20.5", dimension_y="1e3")
+    assert numeric_dimensions.dimension_x == "20.5"
+    assert numeric_dimensions.dimension_y == "1e3"
 
 
 @pytest.mark.asyncio

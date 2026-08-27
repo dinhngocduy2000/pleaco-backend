@@ -5,7 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.map import MapStatus
 from app.common.enum.user_roles import GroupRole
-from app.common.exceptions import BadRequestException, ForbiddenException, NotFoundException
+from app.common.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from app.common.middleware.logger import Logger
 from app.common.schemas.map import MapCreateDTO, MapInfo, MapListInfo, MapListQuery
 from app.common.schemas.tags import TagInfo, TagListInfo
@@ -215,6 +219,8 @@ class MapService:
                         TagListInfo(id=tag.id, name=tag.name, color=tag.color)
                         for tag in tags_by_map.get(row["id"], [])
                     ],
+                    dimension_x=row["dimension_x"],
+                    dimension_y=row["dimension_y"],
                 )
                 for row in rows
             ]

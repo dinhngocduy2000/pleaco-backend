@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from uuid import UUID
 
@@ -30,6 +31,18 @@ class MapCreateDTO(BaseModel):
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Identifiers must be unique")
         return identifiers
+
+    @field_validator("dimension_x", "dimension_y")
+    @classmethod
+    def dimensions_must_be_numbers(cls, dimension: str) -> str:
+        """Accept only finite numeric dimension values while preserving strings."""
+        try:
+            parsed_dimension = Decimal(dimension)
+        except InvalidOperation as exc:
+            raise ValueError("Dimension must be a number") from exc
+        if not parsed_dimension.is_finite():
+            raise ValueError("Dimension must be a finite number")
+        return dimension
 
 
 class MapInfo(BaseModel):
@@ -79,3 +92,5 @@ class MapListInfo(BaseModel):
     description: str | None
     status: MapStatus
     tags: list[TagListInfo] = Field(default_factory=list)
+    dimension_x: str
+    dimension_y: str
