@@ -15,6 +15,31 @@ from app.models.tag import Tag
 
 
 class BotRepository:
+    async def list_bot_key_value(
+        self,
+        session: AsyncSession,
+        group_id: UUID,
+        search: str | None,
+        ctx: AppContext,
+    ) -> list[dict]:
+        """Return searchable bot ID/name/serial pairs limited to one group."""
+        filters = [Robot.group_id == group_id]
+        if search is not None:
+            search_pattern = f"%{search}%"
+            filters.append(
+                or_(
+                    Robot.name.ilike(search_pattern),
+                    Robot.serial_num.ilike(search_pattern),
+                )
+            )
+
+        result = await session.execute(
+            select(Robot.id, Robot.name, Robot.serial_num)
+            .where(*filters)
+            .order_by(Robot.name.asc(), Robot.id.asc())
+        )
+        return [dict(row) for row in result.mappings().all()]
+
     async def list_bots(
         self, session: AsyncSession, query: BotListQuery, ctx: AppContext
     ) -> tuple[list[dict], int]:

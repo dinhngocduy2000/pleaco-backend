@@ -7,8 +7,17 @@ from app.common.enum.context_actions import CREATE_BOT, DELETE_BOT, LIST_BOTS
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.middleware.logger import Logger
-from app.common.schemas.bot import BotCreateDTO, BotInfo, BotListInfo, BotListQuery
-from app.common.schemas.common import BaseResponse, PaginationBaseResponse
+from app.common.schemas.bot import (
+    BotCreateDTO,
+    BotInfo,
+    BotKeyValueInfo,
+    BotListInfo,
+    BotListQuery,
+)
+from app.common.schemas.common import (
+    BaseResponse,
+    PaginationBaseResponse,
+)
 from app.common.schemas.user import Credential
 from app.services.bot import BotService
 
@@ -57,6 +66,29 @@ class BotHandler:
             page=query.page,
             page_size=query.page_size,
             items=bots,
+        )
+
+    @exception_handler
+    async def list_bot_key_value(
+        self,
+        search: str | None = Query(
+            None,
+            min_length=1,
+            description="Case-insensitive search across bot name and serial number",
+        ),
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[list[BotKeyValueInfo]]:
+        ctx = AppContext(trace_id=uuid4(), action=LIST_BOTS, actor=credential.id)
+        bots = await self.service.list_bot_key_value(
+            search=search,
+            group_id=credential.active_group_id,
+            credential=credential,
+            ctx=ctx,
+        )
+        return BaseResponse[list[BotKeyValueInfo]](
+            data=bots,
+            message="Success",
+            statusCode=200,
         )
 
     @exception_handler
