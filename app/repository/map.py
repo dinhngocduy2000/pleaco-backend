@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import exists, func, select
@@ -83,8 +84,8 @@ class MapRepository:
         group_id: UUID,
         name: str,
         description: str | None,
-        dimension_x: str,
-        dimension_y: str,
+        dimension_x: Decimal,
+        dimension_y: Decimal,
         status: MapStatus,
         tags: Sequence[Tag],
         ctx: AppContext,

@@ -1,5 +1,5 @@
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from enum import Enum
 from uuid import UUID
 
@@ -16,8 +16,8 @@ class MapCreateDTO(BaseModel):
     group_id: UUID = Field(..., description="Group that owns the map")
     name: str = Field(..., min_length=1, description="Map name")
     description: str | None = Field(None, description="Optional map description")
-    dimension_x: str = Field(..., min_length=1, description="Map X dimension")
-    dimension_y: str = Field(..., min_length=1, description="Map Y dimension")
+    dimension_x: Decimal = Field(..., description="Map X dimension")
+    dimension_y: Decimal = Field(..., description="Map Y dimension")
     robot_ids: list[UUID] = Field(
         default_factory=list, description="Unassigned robots to assign to the map"
     )
@@ -32,27 +32,14 @@ class MapCreateDTO(BaseModel):
             raise ValueError("Identifiers must be unique")
         return identifiers
 
-    @field_validator("dimension_x", "dimension_y")
-    @classmethod
-    def dimensions_must_be_numbers(cls, dimension: str) -> str:
-        """Accept only finite numeric dimension values while preserving strings."""
-        try:
-            parsed_dimension = Decimal(dimension)
-        except InvalidOperation as exc:
-            raise ValueError("Dimension must be a number") from exc
-        if not parsed_dimension.is_finite():
-            raise ValueError("Dimension must be a finite number")
-        return dimension
-
-
 class MapInfo(BaseModel):
     id: UUID
     group_id: UUID
     name: str
     description: str | None
     status: MapStatus
-    dimension_x: str
-    dimension_y: str
+    dimension_x: Decimal
+    dimension_y: Decimal
     robot_ids: list[UUID] = Field(default_factory=list)
     tags: list[TagInfo] = Field(default_factory=list)
     created_at: datetime
@@ -92,5 +79,5 @@ class MapListInfo(BaseModel):
     description: str | None
     status: MapStatus
     tags: list[TagListInfo] = Field(default_factory=list)
-    dimension_x: str
-    dimension_y: str
+    dimension_x: Decimal
+    dimension_y: Decimal

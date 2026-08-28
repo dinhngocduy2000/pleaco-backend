@@ -1,8 +1,9 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,8 +45,8 @@ class Map(Base):
         default=MapStatus.UNASSIGNED,
         server_default=MapStatus.UNASSIGNED.value,
     )
-    dimension_x: Mapped[str] = mapped_column(String, nullable=False)
-    dimension_y: Mapped[str] = mapped_column(String, nullable=False)
+    dimension_x: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    dimension_y: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     group_id: Mapped[UUID] = mapped_column(
         PostgreSQL_UUID(as_uuid=True),
         ForeignKey("groups.id", ondelete="CASCADE"),

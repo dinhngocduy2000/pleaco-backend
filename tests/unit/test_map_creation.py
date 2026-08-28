@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -191,9 +192,9 @@ def test_map_create_schema_validates_input() -> None:
         with pytest.raises(ValidationError):
             _request(group_id, **overrides)
 
-    numeric_dimensions = _request(group_id, dimension_x="20.5", dimension_y="1e3")
-    assert numeric_dimensions.dimension_x == "20.5"
-    assert numeric_dimensions.dimension_y == "1e3"
+    numeric_dimensions = _request(group_id, dimension_x=20.5, dimension_y="1e3")
+    assert numeric_dimensions.dimension_x == Decimal("20.5")
+    assert numeric_dimensions.dimension_y == Decimal("1E+3")
 
 
 @pytest.mark.asyncio
