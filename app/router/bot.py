@@ -1,7 +1,10 @@
 from fastapi import APIRouter, status
 
-from app.common.schemas.bot import BotInfo, BotListInfo
-from app.common.schemas.common import BaseResponse, PaginationBaseResponse
+from app.common.schemas.bot import BotInfo, BotKeyValueInfo, BotListInfo
+from app.common.schemas.common import (
+    BaseResponse,
+    PaginationBaseResponse,
+)
 from app.handler.bot import BotHandler
 
 
@@ -26,6 +29,18 @@ class BotRouter:
             status_code=status.HTTP_201_CREATED,
             summary="Create a bot",
             description="Create a bot in a group the caller is authorized to manage.",
+        )
+        self.router.add_api_route(
+            path="/key-value",
+            endpoint=self.handler.list_bot_key_value,
+            methods=["GET"],
+            response_model=BaseResponse[list[BotKeyValueInfo]],
+            status_code=status.HTTP_200_OK,
+            summary="List active-group bot options",
+            description=(
+                "List all bots in the caller's active group as ID/name pairs, "
+                "optionally searched by name or serial number."
+            ),
         )
         self.router.add_api_route(
             path="/{bot_id}",

@@ -8,7 +8,7 @@ from app.common.enum.robot import (
     RobotModel,
     RobotOperationalStatus,
 )
-from app.common.schemas.common import PaginationBaseRequest
+from app.common.schemas.common import HashMapResponse, PaginationBaseRequest
 from app.common.schemas.tags import TagInfo
 
 
@@ -111,3 +111,7 @@ class BotListInfo(BaseModel):
         default_factory=list,
         description="Tags assigned to the bot",
     )
+
+
+class BotKeyValueInfo(HashMapResponse):
+    serial_num: str = Field(..., description="Manufacturer serial number")

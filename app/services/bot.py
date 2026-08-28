@@ -14,6 +14,7 @@ from app.common.schemas.bot import (
     BotCreateDTO,
     BotCreateDomain,
     BotInfo,
+    BotKeyValueInfo,
     BotListInfo,
     BotListQuery,
 )
@@ -126,6 +127,36 @@ class BotService:
             ], total
 
         return await self.repo.transaction_wrapper(_list_bots)
+
+    @require_permission(GroupRole.GUEST)
+    async def list_bot_key_value(
+        self,
+        search: str | None,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> list[BotKeyValueInfo]:
+        """Return searchable bot ID/name/serial pairs for the caller's active group."""
+        if group_id is None:
+            raise ForbiddenException(message="A group must be selected")
+
+        async def _list_bot_key_value(session: AsyncSession) -> list[BotKeyValueInfo]:
+            rows = await self.repo.bot_repo().list_bot_key_value(
+                session=session,
+                group_id=group_id,
+                search=search,
+                ctx=ctx,
+            )
+            return [
+                BotKeyValueInfo(
+                    value=row["id"],
+                    label=row["name"],
+                    serial_num=row["serial_num"],
+                )
+                for row in rows
+            ]
+
+        return await self.repo.transaction_wrapper(_list_bot_key_value)
 
     @require_permission(GroupRole.MODERATOR)
     async def delete_bot(
