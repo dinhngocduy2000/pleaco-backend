@@ -30,6 +30,7 @@ class MapRepository:
             Map.created_at,
             Map.dimension_x,
             Map.dimension_y,
+            Map.updated_at,
         )
         filters = [Map.group_id == group_id]
         if query.search is not None:

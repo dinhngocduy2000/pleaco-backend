@@ -32,6 +32,7 @@ class MapCreateDTO(BaseModel):
             raise ValueError("Identifiers must be unique")
         return identifiers
 
+
 class MapInfo(BaseModel):
     id: UUID
     group_id: UUID
@@ -81,3 +82,4 @@ class MapListInfo(BaseModel):
     tags: list[TagListInfo] = Field(default_factory=list)
     dimension_x: Decimal
     dimension_y: Decimal
+    updated_at: datetime
