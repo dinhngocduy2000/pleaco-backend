@@ -221,6 +221,7 @@ class MapService:
                     ],
                     dimension_x=row["dimension_x"],
                     dimension_y=row["dimension_y"],
+                    updated_at=row["updated_at"],
                 )
                 for row in rows
             ]
