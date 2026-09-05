@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -60,6 +61,7 @@ class MapRepositoryStub:
         self.map_id = uuid4()
         self.group_id = None
         self.query = None
+        self.geometry = None
 
     async def list_maps(self, *, query, group_id, **kwargs):
         self.query = query
@@ -72,6 +74,8 @@ class MapRepositoryStub:
                 "status": MapStatus.UNASSIGNED,
                 "dimension_x": "20",
                 "dimension_y": "30",
+                "updated_at": datetime.now(timezone.utc),
+                "geometry": self.geometry,
             }
         ], 1
 
@@ -145,6 +149,7 @@ async def test_all_accepted_roles_list_only_active_group_maps(role: GroupRole) -
     assert map_tags_repository.group_id == active_group_id
     assert maps[0].name == "Floor 1"
     assert maps[0].tags[0].name == "Operations"
+    assert maps[0].geometry is None
 
 
 @pytest.mark.asyncio
@@ -216,6 +221,8 @@ async def test_map_repository_filters_orders_and_paginates_with_group_scope() ->
     assert rows == []
     assert total == 0
     assert "maps.group_id" in page_statement
+    assert "LEFT OUTER JOIN map_boundaries ON map_boundaries.map_id = maps.id" in page_statement
+    assert "ST_AsGeoJSON(map_boundaries.geometry" in page_statement
     assert "maps.name" in page_statement and "LIKE" in page_statement
     assert "maps.status" in page_statement
     assert "map_tags" in page_statement
@@ -223,6 +230,47 @@ async def test_map_repository_filters_orders_and_paginates_with_group_scope() ->
     assert "LIMIT" in page_statement and "OFFSET" in page_statement
     assert "count(distinct(maps.id))" in count_statement
     assert "ORDER BY" not in count_statement
+    assert "map_boundaries" not in count_statement
+
+
+@pytest.mark.asyncio
+async def test_map_repository_decodes_geometry_and_preserves_unbounded_maps() -> None:
+    geometry = {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [10, 0], [10, 10], [0, 0]]],
+    }
+    bounded_id, unbounded_id = uuid4(), uuid4()
+    session = SessionStub(rows=[
+        {"id": bounded_id, "geometry": json.dumps(geometry)},
+        {"id": unbounded_id, "geometry": None},
+    ])
+    rows, _ = await MapRepository().list_maps(
+        session=session, query=MapListQuery(), group_id=uuid4(), ctx=_ctx()
+    )
+    assert rows == [
+        {"id": bounded_id, "geometry": geometry},
+        {"id": unbounded_id, "geometry": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_map_list_serializes_boundary_geometry_with_holes() -> None:
+    geometry = {
+        "type": "Polygon",
+        "coordinates": [
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+            [[1, 1], [1, 2], [2, 2], [2, 1], [1, 1]],
+        ],
+    }
+    service, repository, _ = _service(GroupRole.MEMBER)
+    repository.geometry = geometry
+    group_id = uuid4()
+    maps, total = await service.list_maps(
+        query=MapListQuery(), group_id=group_id,
+        credential=_credential(group_id), ctx=_ctx(),
+    )
+    assert total == 1
+    assert maps[0].model_dump(mode="json")["geometry"] == geometry
 
 
 @pytest.mark.asyncio

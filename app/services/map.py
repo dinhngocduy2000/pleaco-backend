@@ -310,6 +310,7 @@ class MapService:
                     dimension_x=row["dimension_x"],
                     dimension_y=row["dimension_y"],
                     updated_at=row["updated_at"],
+                    geometry=row["geometry"],
                 )
                 for row in rows
             ]

@@ -36,7 +36,10 @@ class MapRouter:
             response_model=PaginationBaseResponse[MapListInfo],
             status_code=status.HTTP_200_OK,
             summary="List active-group maps",
-            description="List maps in the caller's active group.",
+            description=(
+                "List maps in the caller's active group with their boundary geometry. "
+                "Maps without a boundary return geometry as null."
+            ),
         )
         self.router.add_api_route(
             path="",

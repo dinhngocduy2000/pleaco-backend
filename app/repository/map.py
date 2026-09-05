@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from decimal import Decimal
 from uuid import UUID
@@ -9,6 +10,7 @@ from app.common.context import AppContext
 from app.common.enum.map import MapStatus
 from app.common.schemas.map import MapListQuery
 from app.models.map import Map
+from app.models.map_boundary import MapBoundary
 from app.models.map_tags import map_tags
 from app.models.tag import Tag
 
@@ -42,6 +44,7 @@ class MapRepository:
             Map.dimension_x,
             Map.dimension_y,
             Map.updated_at,
+            func.ST_AsGeoJSON(MapBoundary.geometry, 17, 0).label("geometry"),
         )
         filters = [Map.group_id == group_id]
         if query.search is not None:
@@ -70,6 +73,7 @@ class MapRepository:
         )
         stmt = (
             select(*columns)
+            .outerjoin(MapBoundary, MapBoundary.map_id == Map.id)
             .where(*filters)
             .order_by(created_at_order, Map.id.asc())
             .offset((query.page - 1) * query.page_size)
@@ -79,7 +83,14 @@ class MapRepository:
 
         result = await session.execute(stmt)
         total = (await session.execute(count_stmt)).scalar_one()
-        return [dict(row) for row in result.mappings().all()], total
+        rows = []
+        for row in result.mappings().all():
+            item = dict(row)
+            item["geometry"] = (
+                json.loads(item["geometry"]) if item["geometry"] is not None else None
+            )
+            rows.append(item)
+        return rows, total
 
     async def get_by_group_and_name(
         self, session: AsyncSession, group_id: UUID, name: str, ctx: AppContext

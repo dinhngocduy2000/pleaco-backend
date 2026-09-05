@@ -107,3 +107,6 @@ class MapListInfo(BaseModel):
     dimension_x: Decimal
     dimension_y: Decimal
     updated_at: datetime
+    geometry: PolygonGeometry | None = Field(
+        None, description="Boundary polygon in local map coordinates, or null if unset"
+    )
