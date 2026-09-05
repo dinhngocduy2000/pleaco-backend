@@ -12,6 +12,7 @@ from app.common.enum.map import MapStatus
 from app.models.map_tags import map_tags
 
 if TYPE_CHECKING:
+    from app.models.map_boundary import MapBoundary
     from app.models.group import Group
     from app.models.robot import Robot
     from app.models.tag import Tag
@@ -64,6 +65,13 @@ class Map(Base):
     )
 
     group: Mapped["Group"] = relationship("Group", back_populates="maps")
+    boundary: Mapped["MapBoundary | None"] = relationship(
+        "MapBoundary",
+        back_populates="map",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     robots: Mapped[list["Robot"]] = relationship("Robot", back_populates="map")
     tags: Mapped[list["Tag"]] = relationship(
         "Tag", secondary=map_tags, back_populates="maps"
