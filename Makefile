@@ -1,13 +1,16 @@
-# ─── Load .env if it exists ─────────────────────────────────────
-ifneq (,$(wildcard ./.env))
-    include .env
-    export               # ← exports ALL variables loaded by include
-endif
-.PHONY: help install install-dev dev docker-up docker-down migrate migration migration-downgrade migration-status migration-history test test-unit test-integration test-cov test-watch lint format clean
+PYTHON ?= python3.11
+VENV ?= .venv
+VENV_PYTHON = $(VENV)/bin/python
+
+# Runtime configuration is loaded by the application and Docker Compose.
+.DEFAULT_GOAL := help
+
+.PHONY: help venv debug dev-test install install-dev dev docker-up docker-down migrate migration migration-downgrade migration-status migration-history test test-unit test-integration test-cov test-watch lint format clean
 
 help:
 	@echo "Available commands:"
-	@echo "  make install           - Install dependencies"
+	@echo "  make venv              - Create the local Python virtual environment"
+	@echo "  make install           - Install dependencies into the virtual environment"
 	@echo "  make install-dev       - Install dev dependencies"
 	@echo "  make dev               - Run development server"
 	@echo "  make dev-test          - Run server with .env.test"
@@ -30,21 +33,25 @@ help:
 	@echo "  make tag-image         - Tag Docker image"
 	@echo "  make push-image        - Push Docker image to ECR"
 
-install:
-	pip install -r requirements.txt
+venv: $(VENV)/bin/python
 
-install-dev:
-	pip install -r requirements.txt
-	pip install -r requirements-dev.txt
+$(VENV)/bin/python:
+	$(PYTHON) -m venv "$(VENV)"
+
+install: venv
+	"$(VENV_PYTHON)" -m pip install -r requirements.txt
+
+install-dev: venv
+	"$(VENV_PYTHON)" -m pip install -r requirements.txt -r requirements-dev.txt
 
 dev:
-	uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
+	"$(VENV_PYTHON)" -m uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
 
 debug:
-	python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
+	"$(VENV_PYTHON)" -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
 
 dev-test:
-	ENV_FILE=.env.test uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
+	ENV_FILE=.env.test "$(VENV_PYTHON)" -m uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
 
 docker-up:
 	docker-compose up -d
@@ -80,16 +87,16 @@ migration-history:
 	alembic history --verbose
 
 test:
-	pytest -v
+	"$(VENV_PYTHON)" -m pytest -v
 
 test-unit:
-	pytest tests/unit -v
+	"$(VENV_PYTHON)" -m pytest tests/unit -v
 
 test-integration:
-	pytest tests/integration -v
+	"$(VENV_PYTHON)" -m pytest tests/integration -v
 
 test-cov:
-	pytest --cov=app --cov-report=html --cov-report=term
+	"$(VENV_PYTHON)" -m pytest --cov=app --cov-report=html --cov-report=term
 
 test-watch:
 	pytest-watch -- -v

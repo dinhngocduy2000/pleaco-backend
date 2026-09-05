@@ -3,9 +3,10 @@ from decimal import Decimal
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.common.enum.map import MapStatus
+from app.common.enum.map import MapBoundarySource, MapStatus
+from app.common.schemas.geometry import PolygonGeometry
 from app.common.schemas.common import PaginationBaseRequest
 from app.common.schemas.tags import TagInfo, TagListInfo
 
@@ -43,6 +44,29 @@ class MapInfo(BaseModel):
     dimension_y: Decimal
     robot_ids: list[UUID] = Field(default_factory=list)
     tags: list[TagInfo] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class MapBoundarySaveDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    map_id: UUID
+    source: MapBoundarySource = MapBoundarySource.DIMENSIONS
+    geometry: PolygonGeometry | None = None
+
+    @model_validator(mode="after")
+    def geometry_required_for_custom_sources(self) -> "MapBoundarySaveDTO":
+        if self.source != MapBoundarySource.DIMENSIONS and self.geometry is None:
+            raise ValueError("Geometry is required for CUSTOM and TEACH_MODE")
+        return self
+
+
+class MapBoundaryInfo(BaseModel):
+    id: UUID
+    map_id: UUID
+    source: MapBoundarySource
+    geometry: PolygonGeometry
     created_at: datetime
     updated_at: datetime
 
