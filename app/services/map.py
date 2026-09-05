@@ -1,9 +1,11 @@
+from math import isfinite
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
-from app.common.enum.map import MapStatus
+from app.common.enum.geometry import GeometryType
+from app.common.enum.map import MapBoundarySource, MapStatus
 from app.common.enum.user_roles import GroupRole
 from app.common.exceptions import (
     BadRequestException,
@@ -11,7 +13,15 @@ from app.common.exceptions import (
     NotFoundException,
 )
 from app.common.middleware.logger import Logger
-from app.common.schemas.map import MapCreateDTO, MapInfo, MapListInfo, MapListQuery
+from app.common.schemas.geometry import PolygonGeometry
+from app.common.schemas.map import (
+    MapBoundaryInfo,
+    MapBoundarySaveDTO,
+    MapCreateDTO,
+    MapInfo,
+    MapListInfo,
+    MapListQuery,
+)
 from app.common.schemas.tags import TagInfo, TagListInfo
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
@@ -30,6 +40,84 @@ class MapService:
     def __init__(self, repo: Registry, permission_service: PermissionService) -> None:
         self.repo = repo
         self.permission_service = permission_service
+
+    @require_permission(GroupRole.ADMIN)
+    async def save_boundary(
+        self,
+        boundary_save: MapBoundarySaveDTO,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> MapBoundaryInfo:
+        """Create or replace an active-group map's boundary in one transaction."""
+        if group_id is None or group_id != credential.active_group_id:
+            raise ForbiddenException(message="An active group must be selected")
+
+        async def _save(session: AsyncSession) -> MapBoundaryInfo:
+            map_record = await self.repo.map_repo().get_by_id_and_group_for_update(
+                session=session,
+                map_id=boundary_save.map_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if map_record is None:
+                raise NotFoundException(message="Map not found")
+
+            try:
+                x, y = float(map_record.dimension_x), float(map_record.dimension_y)
+            except (ValueError, OverflowError):
+                raise BadRequestException(
+                    message="Map dimensions must be positive finite numbers"
+                ) from None
+            if not all(isfinite(value) and value > 0 for value in (x, y)):
+                raise BadRequestException(
+                    message="Map dimensions must be positive finite numbers"
+                )
+
+            geometry = boundary_save.geometry
+            if boundary_save.source == MapBoundarySource.DIMENSIONS:
+                geometry = self._dimension_boundary(x, y)
+            if geometry is None:
+                raise BadRequestException(
+                    message="Geometry is required for CUSTOM and TEACH_MODE"
+                )
+            geometry_json = geometry.model_dump_json()
+            repository = self.repo.map_boundary_repo()
+            valid, covered = await repository.inspect_geometry(
+                session=session,
+                geometry_json=geometry_json,
+                dimension_x=x,
+                dimension_y=y,
+                ctx=ctx,
+            )
+            if not valid:
+                raise BadRequestException(message="Boundary must be a valid, nonempty polygon")
+            if not covered:
+                raise BadRequestException(message="Boundary must be within the map dimensions")
+
+            result = MapBoundaryInfo.model_validate(
+                await repository.upsert(
+                    session=session,
+                    map_id=map_record.id,
+                    source=boundary_save.source,
+                    geometry_json=geometry_json,
+                    ctx=ctx,
+                )
+            )
+            logger.info(
+                msg=f"Saved boundary {result.id} for map {map_record.id} with source {result.source.value}",
+                context=ctx,
+            )
+            return result
+
+        return await self.repo.transaction_wrapper(_save)
+
+    @staticmethod
+    def _dimension_boundary(x: float, y: float) -> PolygonGeometry:
+        return PolygonGeometry(
+            type=GeometryType.POLYGON,
+            coordinates=[[(0, 0), (x, 0), (x, y), (0, y), (0, 0)]],
+        )
 
     @require_permission(GroupRole.ADMIN)
     async def create_map(

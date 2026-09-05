@@ -14,6 +14,17 @@ from app.models.tag import Tag
 
 
 class MapRepository:
+    async def get_by_id_and_group_for_update(
+        self, session: AsyncSession, map_id: UUID, group_id: UUID, ctx: AppContext
+    ) -> Map | None:
+        """Lock the parent map to serialize boundary writes within its owning group."""
+        result = await session.execute(
+            select(Map)
+            .where(Map.id == map_id, Map.group_id == group_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def list_maps(
         self,
         session: AsyncSession,

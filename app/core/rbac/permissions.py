@@ -6,6 +6,7 @@ from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_BOT,
     CREATE_MAP,
+    SAVE_MAP_BOUNDARY,
     CREATE_TAG,
     DELETE_BOT,
     DELETE_GROUP,
@@ -37,6 +38,7 @@ ROLE_HIERACHY = [
 
 ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
+        SAVE_MAP_BOUNDARY,
         CREATE_BOT,
         CREATE_TAG,
         CREATE_MAP,
@@ -54,6 +56,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         LIST_GROUP_MEMBERS,
     },
     GroupRole.ADMIN: {
+        SAVE_MAP_BOUNDARY,
         CREATE_BOT,
         CREATE_TAG,
         CREATE_MAP,
