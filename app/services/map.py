@@ -50,10 +50,12 @@ class MapService:
         ctx: AppContext,
     ) -> MapBoundaryInfo:
         """Create or replace an active-group map's boundary in one transaction."""
+        # Restrict the write to the caller's currently selected group.
         if group_id is None or group_id != credential.active_group_id:
             raise ForbiddenException(message="An active group must be selected")
 
         async def _save(session: AsyncSession) -> MapBoundaryInfo:
+            # Scope the lookup to the group and lock the map for this transaction.
             map_record = await self.repo.map_repo().get_by_id_and_group_for_update(
                 session=session,
                 map_id=boundary_save.map_id,
@@ -63,6 +65,7 @@ class MapService:
             if map_record is None:
                 raise NotFoundException(message="Map not found")
 
+            # Every boundary source needs finite, positive map bounds for validation.
             try:
                 x, y = float(map_record.dimension_x), float(map_record.dimension_y)
             except (ValueError, OverflowError):
@@ -74,6 +77,7 @@ class MapService:
                     message="Map dimensions must be positive finite numbers"
                 )
 
+            # DIMENSIONS uses the full map rectangle; other sources supply a polygon.
             geometry = boundary_save.geometry
             if boundary_save.source == MapBoundarySource.DIMENSIONS:
                 geometry = self._dimension_boundary(x, y)
@@ -83,6 +87,7 @@ class MapService:
                 )
             geometry_json = geometry.model_dump_json()
             repository = self.repo.map_boundary_repo()
+            # Check polygon validity separately from containment within the map bounds.
             valid, covered = await repository.inspect_geometry(
                 session=session,
                 geometry_json=geometry_json,
@@ -95,6 +100,7 @@ class MapService:
             if not covered:
                 raise BadRequestException(message="Boundary must be within the map dimensions")
 
+            # Create the boundary or replace the existing one for this map.
             result = MapBoundaryInfo.model_validate(
                 await repository.upsert(
                     session=session,
@@ -110,6 +116,7 @@ class MapService:
             )
             return result
 
+        # Keep the map lock, geometry checks, and boundary write in one transaction.
         return await self.repo.transaction_wrapper(_save)
 
     @staticmethod
