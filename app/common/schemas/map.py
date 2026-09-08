@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.common.enum.environment_zone import EnvironmentZoneType
 from app.common.enum.map import MapBoundarySource, MapStatus
 from app.common.schemas.geometry import PolygonGeometry
 from app.common.schemas.common import PaginationBaseRequest
@@ -69,6 +70,20 @@ class MapBoundaryInfo(BaseModel):
     geometry: PolygonGeometry
     created_at: datetime
     updated_at: datetime
+
+
+class EnvironmentZoneCreateItemDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: EnvironmentZoneType
+    geometry: PolygonGeometry
+
+
+class EnvironmentZonesCreateDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    map_id: UUID
+    zones: list[EnvironmentZoneCreateItemDTO] = Field(min_length=1, max_length=100)
 
 
 class MapOrderDirection(str, Enum):

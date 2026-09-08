@@ -10,6 +10,29 @@ class MapRouter:
         self.router = APIRouter(prefix="", tags=["Maps"])
         self.handler = handler
         self.router.add_api_route(
+            path="/zones",
+            endpoint=self.handler.create_environment_zones,
+            methods=["POST"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            summary="Create environment zones",
+            description=(
+                "Owners and Admins may append non-overlapping zones fully contained "
+                "by an active-group map's current boundary."
+            ),
+            responses={
+                400: {
+                    "description": (
+                        "Missing boundary, invalid polygon, containment failure, "
+                        "or zone overlap"
+                    )
+                },
+                401: {"description": "Authentication required"},
+                403: {"description": "Active-group Owner or Admin permission required"},
+                404: {"description": "Map not found in the active group"},
+                422: {"description": "Invalid request fields or geometry structure"},
+            },
+        )
+        self.router.add_api_route(
             path="/boundary",
             endpoint=self.handler.save_boundary,
             methods=["POST"],
