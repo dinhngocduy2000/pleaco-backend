@@ -3,7 +3,14 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from geoalchemy2 import Geometry, WKBElement
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,11 +46,15 @@ class MapBoundary(Base):
     __tablename__ = "map_boundaries"
     __table_args__ = (
         UniqueConstraint("map_id", name="uq_map_boundaries_map_id"),
-        CheckConstraint("ST_IsValid(geometry)", name="ck_map_boundaries_geometry_valid"),
+        CheckConstraint(
+            "ST_IsValid(geometry)", name="ck_map_boundaries_geometry_valid"
+        ),
         CheckConstraint(
             "NOT ST_IsEmpty(geometry)", name="ck_map_boundaries_geometry_not_empty"
         ),
-        CheckConstraint("ST_SRID(geometry) = 0", name="ck_map_boundaries_geometry_srid"),
+        CheckConstraint(
+            "ST_SRID(geometry) = 0", name="ck_map_boundaries_geometry_srid"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -53,6 +64,7 @@ class MapBoundary(Base):
         PostgreSQL_UUID(as_uuid=True),
         ForeignKey("maps.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     source: Mapped[MapBoundarySource] = mapped_column(
         Enum(
@@ -65,7 +77,9 @@ class MapBoundary(Base):
         server_default=MapBoundarySource.DIMENSIONS.value,
     )
     geometry: Mapped[WKBElement] = mapped_column(
-        LocalMapGeometry(geometry_type="POLYGON", srid=0, dimension=2, spatial_index=False),
+        LocalMapGeometry(
+            geometry_type="POLYGON", srid=0, dimension=2, spatial_index=False
+        ),
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
