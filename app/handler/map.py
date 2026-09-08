@@ -3,7 +3,12 @@ from uuid import uuid4
 from fastapi import Depends, Query
 
 from app.common.context import AppContext
-from app.common.enum.context_actions import CREATE_MAP, LIST_MAPS, SAVE_MAP_BOUNDARY
+from app.common.enum.context_actions import (
+    CREATE_ENVIRONMENT_ZONES,
+    CREATE_MAP,
+    LIST_MAPS,
+    SAVE_MAP_BOUNDARY,
+)
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
@@ -11,6 +16,7 @@ from app.common.schemas.map import (
     MapBoundaryInfo,
     MapBoundarySaveDTO,
     MapCreateDTO,
+    EnvironmentZonesCreateDTO,
     MapInfo,
     MapListInfo,
     MapListQuery,
@@ -22,6 +28,22 @@ from app.services.map import MapService
 class MapHandler:
     def __init__(self, service: MapService) -> None:
         self.service = service
+
+    @exception_handler
+    async def create_environment_zones(
+        self,
+        zones_create: EnvironmentZonesCreateDTO,
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> None:
+        ctx = AppContext(
+            trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES, actor=credential.id
+        )
+        await self.service.create_environment_zones(
+            zones_create=zones_create,
+            group_id=credential.active_group_id,
+            credential=credential,
+            ctx=ctx,
+        )
 
     @exception_handler
     async def save_boundary(

@@ -15,6 +15,7 @@ from app.common.exceptions import (
 from app.common.middleware.logger import Logger
 from app.common.schemas.geometry import PolygonGeometry
 from app.common.schemas.map import (
+    EnvironmentZonesCreateDTO,
     MapBoundaryInfo,
     MapBoundarySaveDTO,
     MapCreateDTO,
@@ -40,6 +41,121 @@ class MapService:
     def __init__(self, repo: Registry, permission_service: PermissionService) -> None:
         self.repo = repo
         self.permission_service = permission_service
+
+    @require_permission(GroupRole.ADMIN)
+    async def create_environment_zones(
+        self,
+        zones_create: EnvironmentZonesCreateDTO,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> None:
+        """Atomically append contained, mutually non-overlapping map zones.
+
+        Authorization is enforced by ``require_permission`` before this method
+        runs. The complete validation and insert workflow then executes in one
+        transaction while holding a row lock on the parent map. Boundary saves
+        and competing zone writes acquire the same lock, so a concurrent request
+        validates against the zones committed by the first successful writer.
+
+        Args:
+            zones_create: Validated map identifier and batch of 1–100 zones.
+            group_id: Caller-selected active group, or ``None`` when unselected.
+            credential: Authenticated caller used for group and RBAC validation.
+            ctx: Trace, action, and actor metadata propagated to repositories.
+
+        Raises:
+            ForbiddenException: If no active group is selected or it does not
+                match the authenticated credential.
+            NotFoundException: If the map is absent from the active group.
+            BadRequestException: If the map lacks a boundary, any polygon is
+                invalid or outside it, or any submitted polygon overlaps another
+                submitted or stored zone.
+        """
+        # Never accept a group supplied independently of the authenticated context.
+        if group_id is None or group_id != credential.active_group_id:
+            raise ForbiddenException(message="An active group must be selected")
+
+        async def _create(session: AsyncSession) -> None:
+            # Scope the map lookup to the active group and serialize writes per map.
+            map_record = await self.repo.map_repo().get_by_id_and_group_for_update(
+                session=session,
+                map_id=zones_create.map_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if map_record is None:
+                raise NotFoundException(message="Map not found")
+
+            repository = self.repo.environment_zone_repo()
+
+            # Serialize validated Pydantic geometry without rebuilding coordinates.
+            geometry_jsons = [
+                zone.geometry.model_dump_json() for zone in zones_create.zones
+            ]
+
+            # Reject the complete batch before any insert if topology or
+            # boundary coverage fails.
+            boundary_exists, inspections = await repository.inspect_boundary_coverage(
+                session=session,
+                map_id=map_record.id,
+                geometry_jsons=geometry_jsons,
+                ctx=ctx,
+            )
+            if not boundary_exists:
+                raise BadRequestException(
+                    message="A map boundary is required before creating zones"
+                )
+            for index, valid, covered in inspections:
+                if not valid:
+                    raise BadRequestException(
+                        message=f"Zone at index {index} must be a valid, nonempty polygon"
+                    )
+                if not covered:
+                    raise BadRequestException(
+                        message=f"Zone at index {index} must be within the map boundary"
+                    )
+
+            # Compare every unordered pair from this request; touching alone is valid.
+            overlap = await repository.find_batch_overlap(
+                session=session, geometry_jsons=geometry_jsons, ctx=ctx
+            )
+            if overlap is not None:
+                raise BadRequestException(
+                    message=f"Zones at indexes {overlap[0]} and {overlap[1]} overlap"
+                )
+
+            # The map lock makes this check safe against concurrent endpoint writes.
+            existing_overlap = await repository.find_existing_overlap(
+                session=session,
+                map_id=map_record.id,
+                geometry_jsons=geometry_jsons,
+                ctx=ctx,
+            )
+            if existing_overlap is not None:
+                raise BadRequestException(
+                    message=f"Zone at index {existing_overlap} overlaps an existing zone"
+                )
+
+            # All checks passed, so persist the full batch with one INSERT.
+            await repository.create_many(
+                session=session,
+                map_id=map_record.id,
+                zones=[
+                    (zone.type, geometry_json)
+                    for zone, geometry_json in zip(
+                        zones_create.zones, geometry_jsons, strict=True
+                    )
+                ],
+                ctx=ctx,
+            )
+            logger.info(
+                msg=f"Created {len(zones_create.zones)} zones for map {map_record.id}",
+                context=ctx,
+            )
+
+        # Commit only after _create succeeds; otherwise roll back the transaction.
+        await self.repo.transaction_wrapper(_create)
 
     @require_permission(GroupRole.ADMIN)
     async def save_boundary(
