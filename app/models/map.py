@@ -3,7 +3,16 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Numeric, String, UniqueConstraint, func
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,6 +21,7 @@ from app.common.enum.map import MapStatus
 from app.models.map_tags import map_tags
 
 if TYPE_CHECKING:
+    from app.models.environment_zone import EnvironmentZone
     from app.models.map_boundary import MapBoundary
     from app.models.group import Group
     from app.models.robot import Robot
@@ -69,6 +79,12 @@ class Map(Base):
         "MapBoundary",
         back_populates="map",
         uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    environment_zones: Mapped[list["EnvironmentZone"]] = relationship(
+        "EnvironmentZone",
+        back_populates="map",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
