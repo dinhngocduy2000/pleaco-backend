@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Depends, Query
 
@@ -16,6 +16,7 @@ from app.common.schemas.map import (
     MapBoundaryInfo,
     MapBoundarySaveDTO,
     MapCreateDTO,
+    MapDetailInfo,
     EnvironmentZonesCreateDTO,
     MapInfo,
     MapListInfo,
@@ -79,6 +80,23 @@ class MapHandler:
             data=map_info,
             message="Map created",
             statusCode=201,
+        )
+
+    @exception_handler
+    async def get_map_detail(
+        self,
+        map_id: UUID,
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[MapDetailInfo]:
+        ctx = AppContext(trace_id=uuid4(), action=LIST_MAPS, actor=credential.id)
+        map_detail = await self.service.get_map_detail(
+            map_id=map_id,
+            group_id=credential.active_group_id,
+            credential=credential,
+            ctx=ctx,
+        )
+        return BaseResponse[MapDetailInfo](
+            data=map_detail, message="Map retrieved", statusCode=200
         )
 
     @exception_handler

@@ -12,10 +12,81 @@ from app.common.schemas.map import MapListQuery
 from app.models.map import Map
 from app.models.map_boundary import MapBoundary
 from app.models.map_tags import map_tags
+from app.models.environment_zone import EnvironmentZone
+from app.models.robot import Robot
 from app.models.tag import Tag
 
 
 class MapRepository:
+    async def get_detail_by_id_and_group(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        group_id: UUID,
+        ctx: AppContext,
+    ) -> dict | None:
+        """Return one active-group map and its detail resources without N+1 queries."""
+        map_result = await session.execute(
+            select(
+                Map.id,
+                Map.name,
+                Map.description,
+                Map.status,
+                Map.dimension_x,
+                Map.dimension_y,
+                Map.created_at,
+                Map.updated_at,
+                func.ST_AsGeoJSON(MapBoundary.geometry, 17, 0).label("boundary"),
+            )
+            .outerjoin(MapBoundary, MapBoundary.map_id == Map.id)
+            .where(Map.id == map_id, Map.group_id == group_id)
+        )
+        map_row = map_result.mappings().one_or_none()
+        if map_row is None:
+            return None
+
+        tags_result = await session.execute(
+            select(Tag.id, Tag.name)
+            .select_from(map_tags)
+            .join(Tag, Tag.id == map_tags.c.tag_id)
+            .where(map_tags.c.map_id == map_id, Tag.group_id == group_id)
+            .order_by(Tag.name.asc(), Tag.id.asc())
+        )
+        robots_result = await session.execute(
+            select(
+                Robot.id,
+                Robot.name,
+                Robot.serial_num,
+                Robot.model,
+                Robot.connection_status,
+                Robot.operational_status,
+            )
+            .where(Robot.map_id == map_id, Robot.group_id == group_id)
+            .order_by(Robot.name.asc(), Robot.id.asc())
+        )
+        zones_result = await session.execute(
+            select(
+                EnvironmentZone.id,
+                EnvironmentZone.type,
+                func.ST_AsGeoJSON(EnvironmentZone.geometry, 17, 0).label("geometry"),
+            )
+            .where(EnvironmentZone.map_id == map_id)
+            .order_by(EnvironmentZone.created_at.asc(), EnvironmentZone.id.asc())
+        )
+
+        detail = dict(map_row)
+        detail["boundary"] = (
+            json.loads(detail["boundary"]) if detail["boundary"] is not None else None
+        )
+        detail["tags"] = [dict(row) for row in tags_result.mappings().all()]
+        detail["robots"] = [dict(row) for row in robots_result.mappings().all()]
+        detail["zones"] = []
+        for row in zones_result.mappings().all():
+            zone = dict(row)
+            zone["geometry"] = json.loads(zone["geometry"])
+            detail["zones"].append(zone)
+        return detail
+
     async def get_by_id_and_group_for_update(
         self, session: AsyncSession, map_id: UUID, group_id: UUID, ctx: AppContext
     ) -> Map | None:

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
-from app.common.schemas.map import MapBoundaryInfo, MapInfo, MapListInfo
+from app.common.schemas.map import MapBoundaryInfo, MapDetailInfo, MapInfo, MapListInfo
 from app.handler.map import MapHandler
 
 
@@ -50,6 +50,23 @@ class MapRouter:
                 403: {"description": "Active-group Owner or Admin permission required"},
                 404: {"description": "Map not found in the active group"},
                 422: {"description": "Invalid request fields or geometry structure"},
+            },
+        )
+        self.router.add_api_route(
+            path="/{map_id}",
+            endpoint=self.handler.get_map_detail,
+            methods=["GET"],
+            response_model=BaseResponse[MapDetailInfo],
+            status_code=status.HTTP_200_OK,
+            summary="Get active-group map detail",
+            description=(
+                "Return an active-group map's metadata, compact tags, assigned robots, "
+                "boundary, and environment zones."
+            ),
+            responses={
+                401: {"description": "Authentication required"},
+                403: {"description": "An active group must be selected"},
+                404: {"description": "Map not found in the active group"},
             },
         )
         self.router.add_api_route(

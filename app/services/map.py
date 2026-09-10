@@ -19,6 +19,7 @@ from app.common.schemas.map import (
     MapBoundaryInfo,
     MapBoundarySaveDTO,
     MapCreateDTO,
+    MapDetailInfo,
     MapInfo,
     MapListInfo,
     MapListQuery,
@@ -389,6 +390,28 @@ class MapService:
                 message="One or more robots are already assigned to a map"
             )
         return robots
+
+    @require_permission(GroupRole.GUEST)
+    async def get_map_detail(
+        self,
+        map_id: UUID,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> MapDetailInfo:
+        """Return one map and its related resources within the active group."""
+        if group_id is None:
+            raise ForbiddenException(message="A group must be selected")
+
+        async def _get_map_detail(session: AsyncSession) -> MapDetailInfo:
+            detail = await self.repo.map_repo().get_detail_by_id_and_group(
+                session=session, map_id=map_id, group_id=group_id, ctx=ctx
+            )
+            if detail is None:
+                raise NotFoundException(message="Map not found")
+            return MapDetailInfo.model_validate(detail)
+
+        return await self.repo.transaction_wrapper(_get_map_detail)
 
     @require_permission(GroupRole.GUEST)
     async def list_maps(
