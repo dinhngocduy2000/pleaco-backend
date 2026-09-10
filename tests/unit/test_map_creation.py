@@ -362,7 +362,7 @@ async def test_repositories_scope_map_name_and_lock_robot_assignments() -> None:
 def test_router_declares_create_map_route() -> None:
     handler = SimpleNamespace(
         create_map=lambda: None, list_maps=lambda: None, save_boundary=lambda: None,
-        create_environment_zones=lambda: None,
+        create_environment_zones=lambda: None, get_map_detail=lambda: None,
     )
     router = MapRouter(handler).router
     routes = {

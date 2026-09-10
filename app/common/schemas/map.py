@@ -7,6 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.common.enum.environment_zone import EnvironmentZoneType
 from app.common.enum.map import MapBoundarySource, MapStatus
+from app.common.enum.robot import (
+    RobotConnectionStatus,
+    RobotModel,
+    RobotOperationalStatus,
+)
 from app.common.schemas.geometry import PolygonGeometry
 from app.common.schemas.common import PaginationBaseRequest
 from app.common.schemas.tags import TagInfo, TagListInfo
@@ -125,3 +130,40 @@ class MapListInfo(BaseModel):
     geometry: PolygonGeometry | None = Field(
         None, description="Boundary polygon in local map coordinates, or null if unset"
     )
+
+
+class MapDetailTagInfo(BaseModel):
+    id: UUID
+    name: str
+
+
+class MapDetailRobotInfo(BaseModel):
+    id: UUID
+    name: str
+    serial_num: str
+    model: RobotModel
+    connection_status: RobotConnectionStatus
+    operational_status: RobotOperationalStatus
+
+
+class MapDetailZoneInfo(BaseModel):
+    id: UUID
+    type: EnvironmentZoneType
+    geometry: PolygonGeometry
+
+
+class MapDetailInfo(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    status: MapStatus
+    dimension_x: Decimal
+    dimension_y: Decimal
+    created_at: datetime
+    updated_at: datetime
+    tags: list[MapDetailTagInfo] = Field(default_factory=list)
+    robots: list[MapDetailRobotInfo] = Field(default_factory=list)
+    boundary: PolygonGeometry | None = Field(
+        None, description="Boundary polygon in local map coordinates, or null if unset"
+    )
+    zones: list[MapDetailZoneInfo] = Field(default_factory=list)
