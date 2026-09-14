@@ -35,7 +35,7 @@ from app.models import EnvironmentZone, Group, Map, MapBoundary, User
 from app.repository.environment_zone import EnvironmentZoneRepository
 from app.repository.map import MapRepository
 from app.repository.registry import Registry
-from app.services.map import MapService
+from app.services.environment_zones import EnvironmentZonesService
 
 
 POLYGON = "POLYGON((0 0,10 0,10 10,0 10,0 0))"
@@ -82,7 +82,7 @@ def service_for_connection(connection):
             async with session.begin():
                 return await callback(session)
 
-    return MapService(
+    return EnvironmentZonesService(
         SimpleNamespace(
             map_repo=MapRepository,
             environment_zone_repo=EnvironmentZoneRepository,
@@ -660,7 +660,7 @@ async def test_concurrent_overlapping_batches_are_first_writer_wins():
         tasks.append(
             asyncio.create_task(
                 create_zones(
-                    MapService(first_registry, permissions()),
+                    EnvironmentZonesService(first_registry, permissions()),
                     credential,
                     map_id,
                     geometry,
@@ -671,7 +671,7 @@ async def test_concurrent_overlapping_batches_are_first_writer_wins():
         tasks.append(
             asyncio.create_task(
                 create_zones(
-                    MapService(second_registry, permissions()),
+                    EnvironmentZonesService(second_registry, permissions()),
                     credential,
                     map_id,
                     geometry,

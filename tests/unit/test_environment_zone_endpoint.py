@@ -26,7 +26,7 @@ from app.core.rbac.permissions import PermissionService
 from app.handler.map import MapHandler
 from app.router.map import MapRouter
 from app.repository.environment_zone import EnvironmentZoneRepository
-from app.services.map import MapService
+from app.services.environment_zones import EnvironmentZonesService
 
 
 def polygon(left=0, bottom=0, right=2, top=2):
@@ -96,7 +96,7 @@ def setup_service(role=GroupRole.ADMIN, exists=True):
         ),
         is_action_executable=PermissionService.is_action_executable,
     )
-    return MapService(registry, permissions), credential, map_record, maps, zones
+    return EnvironmentZonesService(registry, permissions), credential, map_record, maps, zones
 
 
 async def invoke(service, credential, map_id, geometries=None):
@@ -345,7 +345,10 @@ async def test_repository_uses_set_based_postgis_queries_and_bulk_insert():
 async def test_http_contract_authentication_validation_and_openapi():
     service, credential, map_record, _, _ = setup_service()
     app = FastAPI()
-    app.include_router(MapRouter(MapHandler(service)).router, prefix="/api/v1/maps")
+    app.include_router(
+        MapRouter(MapHandler(SimpleNamespace(), service)).router,
+        prefix="/api/v1/maps",
+    )
     path = "/api/v1/maps/zones"
 
     async with AsyncClient(

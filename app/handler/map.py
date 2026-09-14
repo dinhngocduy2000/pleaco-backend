@@ -24,11 +24,15 @@ from app.common.schemas.map import (
 )
 from app.common.schemas.user import Credential
 from app.services.map import MapService
+from app.services.environment_zones import EnvironmentZonesService
 
 
 class MapHandler:
-    def __init__(self, service: MapService) -> None:
+    def __init__(
+        self, service: MapService, environment_zones_service: EnvironmentZonesService
+    ) -> None:
         self.service = service
+        self.environment_zones_service = environment_zones_service
 
     @exception_handler
     async def create_environment_zones(
@@ -39,7 +43,7 @@ class MapHandler:
         ctx = AppContext(
             trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES, actor=credential.id
         )
-        await self.service.create_environment_zones(
+        await self.environment_zones_service.create_environment_zones(
             zones_create=zones_create,
             group_id=credential.active_group_id,
             credential=credential,
