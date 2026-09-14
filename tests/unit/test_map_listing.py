@@ -107,7 +107,11 @@ def _service(role: GroupRole | None):
         map_tags_repo=lambda: map_tags_repository,
         transaction_wrapper=lambda callback: callback(SimpleNamespace()),
     )
-    return MapService(registry, PermissionServiceStub(role)), map_repository, map_tags_repository
+    return (
+        MapService(registry, PermissionServiceStub(role)),
+        map_repository,
+        map_tags_repository,
+    )
 
 
 def test_map_list_query_defaults_and_validation() -> None:
@@ -221,7 +225,10 @@ async def test_map_repository_filters_orders_and_paginates_with_group_scope() ->
     assert rows == []
     assert total == 0
     assert "maps.group_id" in page_statement
-    assert "LEFT OUTER JOIN map_boundaries ON map_boundaries.map_id = maps.id" in page_statement
+    assert (
+        "LEFT OUTER JOIN map_boundaries ON map_boundaries.map_id = maps.id"
+        in page_statement
+    )
     assert "ST_AsGeoJSON(map_boundaries.geometry" in page_statement
     assert "maps.name" in page_statement and "LIKE" in page_statement
     assert "maps.status" in page_statement
@@ -240,10 +247,12 @@ async def test_map_repository_decodes_geometry_and_preserves_unbounded_maps() ->
         "coordinates": [[[0, 0], [10, 0], [10, 10], [0, 0]]],
     }
     bounded_id, unbounded_id = uuid4(), uuid4()
-    session = SessionStub(rows=[
-        {"id": bounded_id, "geometry": json.dumps(geometry)},
-        {"id": unbounded_id, "geometry": None},
-    ])
+    session = SessionStub(
+        rows=[
+            {"id": bounded_id, "geometry": json.dumps(geometry)},
+            {"id": unbounded_id, "geometry": None},
+        ]
+    )
     rows, _ = await MapRepository().list_maps(
         session=session, query=MapListQuery(), group_id=uuid4(), ctx=_ctx()
     )
@@ -266,8 +275,10 @@ async def test_map_list_serializes_boundary_geometry_with_holes() -> None:
     repository.geometry = geometry
     group_id = uuid4()
     maps, total = await service.list_maps(
-        query=MapListQuery(), group_id=group_id,
-        credential=_credential(group_id), ctx=_ctx(),
+        query=MapListQuery(),
+        group_id=group_id,
+        credential=_credential(group_id),
+        ctx=_ctx(),
     )
     assert total == 1
     assert maps[0].model_dump(mode="json")["geometry"] == geometry
@@ -301,8 +312,11 @@ async def test_map_tags_repository_returns_group_scoped_tags_by_map() -> None:
 
 def test_router_declares_map_list_contract() -> None:
     handler = SimpleNamespace(
-        create_map=lambda: None, list_maps=lambda: None, save_boundary=lambda: None,
-        create_environment_zones=lambda: None, get_map_detail=lambda: None,
+        create_map=lambda: None,
+        list_maps=lambda: None,
+        save_boundary=lambda: None,
+        save_environment_zones=lambda: None,
+        get_map_detail=lambda: None,
     )
     router = MapRouter(handler).router
     routes = {

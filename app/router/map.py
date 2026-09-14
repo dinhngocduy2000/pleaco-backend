@@ -11,10 +11,10 @@ class MapRouter:
         self.handler = handler
         self.router.add_api_route(
             path="/zones",
-            endpoint=self.handler.create_environment_zones,
+            endpoint=self.handler.save_environment_zones,
             methods=["POST"],
             status_code=status.HTTP_204_NO_CONTENT,
-            summary="Create environment zones",
+            summary="Adjust environment zones",
             description=(
                 "Owners and Admins may append non-overlapping zones fully contained "
                 "by an active-group map's current boundary."
@@ -45,7 +45,9 @@ class MapRouter:
                 "a valid local X/Y polygon within the map dimensions."
             ),
             responses={
-                400: {"description": "Invalid dimensions, polygon topology, or containment"},
+                400: {
+                    "description": "Invalid dimensions, polygon topology, or containment"
+                },
                 401: {"description": "Authentication required"},
                 403: {"description": "Active-group Owner or Admin permission required"},
                 404: {"description": "Map not found in the active group"},

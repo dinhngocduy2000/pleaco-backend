@@ -10,7 +10,7 @@ from app.common.exceptions import (
     NotFoundException,
 )
 from app.common.middleware.logger import Logger
-from app.common.schemas.map import EnvironmentZonesCreateDTO
+from app.common.schemas.map import EnvironmentZonesSaveDTO
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
@@ -27,9 +27,9 @@ class EnvironmentZonesService:
         self.permission_service = permission_service
 
     @require_permission(GroupRole.ADMIN)
-    async def create_environment_zones(
+    async def save_environment_zones(
         self,
-        zones_create: EnvironmentZonesCreateDTO,
+        zones_create: EnvironmentZonesSaveDTO,
         group_id: UUID | None,
         credential: Credential,
         ctx: AppContext,

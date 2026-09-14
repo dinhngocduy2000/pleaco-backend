@@ -20,7 +20,7 @@ from app.common.exceptions import (
     NotFoundException,
 )
 from app.common.middleware.auth_middleware import AuthMiddleware
-from app.common.schemas.map import EnvironmentZonesCreateDTO
+from app.common.schemas.map import EnvironmentZonesSaveDTO
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.handler.map import MapHandler
@@ -96,12 +96,18 @@ def setup_service(role=GroupRole.ADMIN, exists=True):
         ),
         is_action_executable=PermissionService.is_action_executable,
     )
-    return EnvironmentZonesService(registry, permissions), credential, map_record, maps, zones
+    return (
+        EnvironmentZonesService(registry, permissions),
+        credential,
+        map_record,
+        maps,
+        zones,
+    )
 
 
 async def invoke(service, credential, map_id, geometries=None):
-    return await service.create_environment_zones(
-        zones_create=EnvironmentZonesCreateDTO.model_validate(
+    return await service.save_environment_zones(
+        zones_create=EnvironmentZonesSaveDTO.model_validate(
             payload(map_id, geometries)
         ),
         group_id=credential.active_group_id,
@@ -153,11 +159,11 @@ async def invoke(service, credential, map_id, geometries=None):
 )
 def test_request_rejects_invalid_fields(invalid_payload):
     with pytest.raises(ValidationError):
-        EnvironmentZonesCreateDTO.model_validate(invalid_payload)
+        EnvironmentZonesSaveDTO.model_validate(invalid_payload)
 
 
 def test_request_accepts_one_to_one_hundred_zones_and_all_types():
-    request = EnvironmentZonesCreateDTO.model_validate(
+    request = EnvironmentZonesSaveDTO.model_validate(
         {
             "map_id": str(uuid4()),
             "zones": [
@@ -169,9 +175,9 @@ def test_request_accepts_one_to_one_hundred_zones_and_all_types():
     assert [zone.type for zone in request.zones] == list(EnvironmentZoneType)
 
     hundred = payload(geometries=[polygon()] * 100)
-    assert len(EnvironmentZonesCreateDTO.model_validate(hundred).zones) == 100
+    assert len(EnvironmentZonesSaveDTO.model_validate(hundred).zones) == 100
     with pytest.raises(ValidationError):
-        EnvironmentZonesCreateDTO.model_validate(payload(geometries=[polygon()] * 101))
+        EnvironmentZonesSaveDTO.model_validate(payload(geometries=[polygon()] * 101))
 
 
 @pytest.mark.asyncio

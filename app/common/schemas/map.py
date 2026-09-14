@@ -77,18 +77,18 @@ class MapBoundaryInfo(BaseModel):
     updated_at: datetime
 
 
-class EnvironmentZoneCreateItemDTO(BaseModel):
+class EnvironmentZoneSaveItemDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: EnvironmentZoneType
     geometry: PolygonGeometry
 
 
-class EnvironmentZonesCreateDTO(BaseModel):
+class EnvironmentZonesSaveDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     map_id: UUID
-    zones: list[EnvironmentZoneCreateItemDTO] = Field(min_length=1, max_length=100)
+    zones: list[EnvironmentZoneSaveItemDTO] = Field(min_length=1, max_length=100)
 
 
 class MapOrderDirection(str, Enum):

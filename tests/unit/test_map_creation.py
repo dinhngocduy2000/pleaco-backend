@@ -16,7 +16,11 @@ from app.common.enum.robot import (
 )
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
-from app.common.exceptions import BadRequestException, ForbiddenException, NotFoundException
+from app.common.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from app.common.schemas.group import GroupMemberInfo
 from app.common.schemas.map import MapCreateDTO
 from app.common.schemas.user import Credential
@@ -105,11 +109,26 @@ class MapRepositoryStub:
 
     async def get_by_group_and_name(self, *, group_id, name, **kwargs):
         return next(
-            (item for item in self.maps if item.group_id == group_id and item.name == name),
+            (
+                item
+                for item in self.maps
+                if item.group_id == group_id and item.name == name
+            ),
             None,
         )
 
-    async def create_map(self, *, group_id, name, description, dimension_x, dimension_y, status, tags, **kwargs):
+    async def create_map(
+        self,
+        *,
+        group_id,
+        name,
+        description,
+        dimension_x,
+        dimension_y,
+        status,
+        tags,
+        **kwargs
+    ):
         now = datetime.now(timezone.utc)
         map_record = Map(
             id=uuid4(),
@@ -361,8 +380,11 @@ async def test_repositories_scope_map_name_and_lock_robot_assignments() -> None:
 
 def test_router_declares_create_map_route() -> None:
     handler = SimpleNamespace(
-        create_map=lambda: None, list_maps=lambda: None, save_boundary=lambda: None,
-        create_environment_zones=lambda: None, get_map_detail=lambda: None,
+        create_map=lambda: None,
+        list_maps=lambda: None,
+        save_boundary=lambda: None,
+        save_environment_zones=lambda: None,
+        get_map_detail=lambda: None,
     )
     router = MapRouter(handler).router
     routes = {
