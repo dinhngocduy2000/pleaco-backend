@@ -80,8 +80,16 @@ class MapBoundaryInfo(BaseModel):
 class EnvironmentZoneSaveItemDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    id: UUID | None = None
     type: EnvironmentZoneType
     geometry: PolygonGeometry
+    to_delete: bool = False
+
+    @model_validator(mode="after")
+    def deleted_zone_must_have_id(self) -> "EnvironmentZoneSaveItemDTO":
+        if self.to_delete and self.id is None:
+            raise ValueError("An id is required when deleting an environment zone")
+        return self
 
 
 class EnvironmentZonesSaveDTO(BaseModel):
@@ -89,6 +97,13 @@ class EnvironmentZonesSaveDTO(BaseModel):
 
     map_id: UUID
     zones: list[EnvironmentZoneSaveItemDTO] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def zone_ids_must_be_unique(self) -> "EnvironmentZonesSaveDTO":
+        zone_ids = [zone.id for zone in self.zones if zone.id is not None]
+        if len(zone_ids) != len(set(zone_ids)):
+            raise ValueError("Environment zone identifiers must be unique")
+        return self
 
 
 class MapOrderDirection(str, Enum):

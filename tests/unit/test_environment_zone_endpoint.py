@@ -72,6 +72,9 @@ def setup_service(role=GroupRole.ADMIN, exists=True):
         inspect_boundary_coverage=AsyncMock(),
         find_batch_overlap=AsyncMock(return_value=None),
         find_existing_overlap=AsyncMock(return_value=None),
+        get_existing_ids=AsyncMock(return_value=set()),
+        delete_many=AsyncMock(),
+        update_many=AsyncMock(),
         create_many=AsyncMock(),
     )
 
@@ -180,6 +183,29 @@ def test_request_accepts_one_to_one_hundred_zones_and_all_types():
         EnvironmentZonesSaveDTO.model_validate(payload(geometries=[polygon()] * 101))
 
 
+@pytest.mark.parametrize(
+    "zones",
+    [
+        [{"type": "NO_GO", "geometry": polygon(), "to_delete": True}],
+        [
+            {"id": str(uuid4()), "type": "NO_GO", "geometry": polygon()},
+            {"id": str(uuid4()), "type": "OBSTACLE", "geometry": polygon()},
+        ],
+    ],
+)
+def test_request_rejects_invalid_delete_and_duplicate_ids(zones):
+    if len(zones) == 2:
+        zones[1]["id"] = zones[0]["id"]
+    with pytest.raises(ValidationError):
+        EnvironmentZonesSaveDTO.model_validate({"map_id": str(uuid4()), "zones": zones})
+
+
+def test_request_defaults_new_zone_identity_and_delete_flag():
+    request = EnvironmentZonesSaveDTO.model_validate(payload())
+    assert request.zones[0].id is None
+    assert request.zones[0].to_delete is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", [GroupRole.OWNER, GroupRole.ADMIN])
 async def test_owner_and_admin_create_an_atomic_batch(role):
@@ -200,6 +226,112 @@ async def test_owner_and_admin_create_an_atomic_batch(role):
         EnvironmentZoneType.NO_GO,
     ]
     assert [json.loads(geometry) for _, geometry in saved] == geometries
+
+
+@pytest.mark.asyncio
+async def test_service_applies_mixed_create_edit_and_delete_atomically():
+    service, credential, map_record, _, zones = setup_service()
+    edit_id, delete_id = uuid4(), uuid4()
+    zones.get_existing_ids.return_value = {edit_id, delete_id}
+    request = EnvironmentZonesSaveDTO.model_validate(
+        {
+            "map_id": str(map_record.id),
+            "zones": [
+                {"type": "NO_GO", "geometry": polygon(0, 0, 1, 1)},
+                {
+                    "id": str(edit_id),
+                    "type": "OBSTACLE",
+                    "geometry": polygon(2, 0, 3, 1),
+                },
+                {
+                    "id": str(delete_id),
+                    "type": "CLEANING_ZONE",
+                    "geometry": polygon(4, 0, 5, 1),
+                    "to_delete": True,
+                },
+            ],
+        }
+    )
+
+    await service.save_environment_zones(
+        zones_create=request,
+        group_id=credential.active_group_id,
+        credential=credential,
+        ctx=AppContext(trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES),
+    )
+
+    zones.delete_many.assert_awaited_once()
+    assert zones.delete_many.call_args.kwargs["zone_ids"] == [delete_id]
+    zones.update_many.assert_awaited_once()
+    assert zones.update_many.call_args.kwargs["zones"][0][0] == edit_id
+    zones.create_many.assert_awaited_once()
+    assert len(zones.create_many.call_args.kwargs["zones"]) == 1
+    assert zones.find_existing_overlap.call_args.kwargs["excluded_zone_ids"] == [
+        delete_id,
+        edit_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_missing_delete_is_ignored_without_geometry_validation():
+    service, credential, map_record, _, zones = setup_service()
+    deleted_id = uuid4()
+    request = EnvironmentZonesSaveDTO.model_validate(
+        {
+            "map_id": str(map_record.id),
+            "zones": [
+                {
+                    "id": str(deleted_id),
+                    "type": "NO_GO",
+                    "geometry": polygon(),
+                    "to_delete": True,
+                }
+            ],
+        }
+    )
+
+    await service.save_environment_zones(
+        zones_create=request,
+        group_id=credential.active_group_id,
+        credential=credential,
+        ctx=AppContext(trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES),
+    )
+
+    zones.inspect_boundary_coverage.assert_not_awaited()
+    zones.delete_many.assert_not_awaited()
+    zones.update_many.assert_not_awaited()
+    zones.create_many.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_edit_returns_conflict_and_does_not_write():
+    service, credential, map_record, _, zones = setup_service()
+    request = EnvironmentZonesSaveDTO.model_validate(
+        {
+            "map_id": str(map_record.id),
+            "zones": [
+                {
+                    "id": str(uuid4()),
+                    "type": "NO_GO",
+                    "geometry": polygon(),
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(BadRequestException, match="refresh") as error:
+        await service.save_environment_zones(
+            zones_create=request,
+            group_id=credential.active_group_id,
+            credential=credential,
+            ctx=AppContext(trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES),
+        )
+
+    assert error.value.status_code == 409
+    zones.inspect_boundary_coverage.assert_not_awaited()
+    zones.delete_many.assert_not_awaited()
+    zones.update_many.assert_not_awaited()
+    zones.create_many.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -262,6 +394,8 @@ async def test_intra_batch_overlap_never_checks_existing_or_writes():
             [polygon(0, 0, 3, 3), polygon(1, 1, 2, 2)],
         )
     zones.find_existing_overlap.assert_not_awaited()
+    zones.delete_many.assert_not_awaited()
+    zones.update_many.assert_not_awaited()
     zones.create_many.assert_not_awaited()
 
 
@@ -271,6 +405,8 @@ async def test_existing_overlap_never_writes():
     zones.find_existing_overlap.return_value = 0
     with pytest.raises(BadRequestException, match="index 0"):
         await invoke(service, credential, map_record.id)
+    zones.delete_many.assert_not_awaited()
+    zones.update_many.assert_not_awaited()
     zones.create_many.assert_not_awaited()
 
 
@@ -345,6 +481,60 @@ async def test_repository_uses_set_based_postgis_queries_and_bulk_insert():
         "T********" in values.values()
         for values in [statement.params for statement in statements]
     )
+
+
+@pytest.mark.asyncio
+async def test_repository_scopes_lookup_update_delete_and_overlap_exclusions():
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            return Result()
+
+        async def scalars(self, statement):
+            self.statements.append(statement)
+            return [zone_id]
+
+    repository = EnvironmentZoneRepository()
+    session = Session()
+    map_id, zone_id = uuid4(), uuid4()
+    geometry = json.dumps(polygon())
+    ctx = AppContext(trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES)
+
+    assert await repository.get_existing_ids(session, map_id, [zone_id], ctx) == {
+        zone_id
+    }
+    assert (
+        await repository.find_existing_overlap(
+            session, map_id, [geometry], ctx, excluded_zone_ids=[zone_id]
+        )
+        is None
+    )
+    await repository.delete_many(session, map_id, [zone_id], ctx)
+    await repository.update_many(
+        session,
+        map_id,
+        [(zone_id, EnvironmentZoneType.OBSTACLE, geometry)],
+        ctx,
+    )
+
+    sql = [
+        str(statement.compile(dialect=postgresql.dialect()))
+        for statement in session.statements
+    ]
+    assert "SELECT environment_zones.id" in sql[0]
+    assert "environment_zones.id NOT IN" in sql[1]
+    assert "DELETE FROM environment_zones" in sql[2]
+    assert "UPDATE environment_zones SET type=" in sql[3]
+    assert "environment_zones.map_id" in sql[0]
+    assert "environment_zones.map_id" in sql[2]
+    assert "environment_zones.map_id" in sql[3]
 
 
 @pytest.mark.asyncio

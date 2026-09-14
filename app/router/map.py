@@ -16,8 +16,9 @@ class MapRouter:
             status_code=status.HTTP_204_NO_CONTENT,
             summary="Adjust environment zones",
             description=(
-                "Owners and Admins may append non-overlapping zones fully contained "
-                "by an active-group map's current boundary."
+                "Owners and Admins may atomically create, edit, and delete "
+                "non-overlapping zones fully contained by an active-group map's "
+                "current boundary."
             ),
             responses={
                 400: {
@@ -25,6 +26,9 @@ class MapRouter:
                         "Missing boundary, invalid polygon, containment failure, "
                         "or zone overlap"
                     )
+                },
+                409: {
+                    "description": "An edited zone was changed or deleted; refresh the map"
                 },
                 401: {"description": "Authentication required"},
                 403: {"description": "Active-group Owner or Admin permission required"},
