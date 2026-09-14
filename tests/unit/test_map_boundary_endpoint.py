@@ -192,7 +192,10 @@ async def test_invalid_spatial_result_never_writes(checks):
 async def test_http_contract_authentication_and_openapi():
     service, credential, record, maps, boundaries = setup_service()
     app = FastAPI()
-    app.include_router(MapRouter(MapHandler(service)).router, prefix="/api/v1/maps")
+    app.include_router(
+        MapRouter(MapHandler(service, SimpleNamespace())).router,
+        prefix="/api/v1/maps",
+    )
     path = "/api/v1/maps/boundary"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(path, json={"map_id": str(record.id)})

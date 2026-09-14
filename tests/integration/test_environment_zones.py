@@ -26,7 +26,7 @@ from app.common.enum.context_actions import CREATE_ENVIRONMENT_ZONES
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import BadRequestException
-from app.common.schemas.map import EnvironmentZonesCreateDTO
+from app.common.schemas.map import EnvironmentZonesSaveDTO
 from app.common.schemas.user import Credential
 from app.common.context import AppContext
 from app.core.database import Base
@@ -35,8 +35,7 @@ from app.models import EnvironmentZone, Group, Map, MapBoundary, User
 from app.repository.environment_zone import EnvironmentZoneRepository
 from app.repository.map import MapRepository
 from app.repository.registry import Registry
-from app.services.map import MapService
-
+from app.services.environment_zones import EnvironmentZonesService
 
 POLYGON = "POLYGON((0 0,10 0,10 10,0 10,0 0))"
 MIGRATION_PATH = (
@@ -82,7 +81,7 @@ def service_for_connection(connection):
             async with session.begin():
                 return await callback(session)
 
-    return MapService(
+    return EnvironmentZonesService(
         SimpleNamespace(
             map_repo=MapRepository,
             environment_zone_repo=EnvironmentZoneRepository,
@@ -108,7 +107,7 @@ def rectangle(left, bottom, right, top):
 
 
 async def create_zones(service, credential, map_id, geometries):
-    request = EnvironmentZonesCreateDTO.model_validate(
+    request = EnvironmentZonesSaveDTO.model_validate(
         {
             "map_id": map_id,
             "zones": [
@@ -117,7 +116,7 @@ async def create_zones(service, credential, map_id, geometries):
             ],
         }
     )
-    return await service.create_environment_zones(
+    return await service.save_environment_zones(
         zones_create=request,
         group_id=credential.active_group_id,
         credential=credential,
@@ -660,7 +659,7 @@ async def test_concurrent_overlapping_batches_are_first_writer_wins():
         tasks.append(
             asyncio.create_task(
                 create_zones(
-                    MapService(first_registry, permissions()),
+                    EnvironmentZonesService(first_registry, permissions()),
                     credential,
                     map_id,
                     geometry,
@@ -671,7 +670,7 @@ async def test_concurrent_overlapping_batches_are_first_writer_wins():
         tasks.append(
             asyncio.create_task(
                 create_zones(
-                    MapService(second_registry, permissions()),
+                    EnvironmentZonesService(second_registry, permissions()),
                     credential,
                     map_id,
                     geometry,

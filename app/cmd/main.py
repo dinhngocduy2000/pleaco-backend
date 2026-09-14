@@ -42,6 +42,7 @@ from app.router.tag import TagRouter
 from app.services.auth import AuthService
 from app.services.bot import BotService
 from app.services.group import GroupService
+from app.services.environment_zones import EnvironmentZonesService
 from app.services.map import MapService
 from app.services.tag import TagService
 from app.services.user import UserService
@@ -107,6 +108,10 @@ class App:
                 repo=registry,
                 permission_service=permission_service,
             )
+            environment_zones_service = EnvironmentZonesService(
+                repo=registry,
+                permission_service=permission_service,
+            )
             self.application.state.group_invitation_expiry_task = asyncio.create_task(
                 group_service.run_invitation_expiry_reconciler(),
                 name="group-invitation-expiry-reconciler",
@@ -123,7 +128,10 @@ class App:
             )
             bot_handler = BotHandler(service=bot_service)
             tag_handler = TagHandler(service=tag_service)
-            map_handler = MapHandler(service=map_service)
+            map_handler = MapHandler(
+                service=map_service,
+                environment_zones_service=environment_zones_service,
+            )
 
             # ------------ Router ------------
             user_router = UserRouter(handler=user_handler)

@@ -1,7 +1,17 @@
 from collections.abc import Sequence
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, exists, func, insert, literal, select, union_all
+from sqlalchemy import (
+    case,
+    delete,
+    exists,
+    func,
+    insert,
+    literal,
+    select,
+    union_all,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import CTE
 
@@ -172,6 +182,7 @@ class EnvironmentZoneRepository:
         map_id: UUID,
         geometry_jsons: Sequence[str],
         ctx: AppContext,
+        excluded_zone_ids: Sequence[UUID] = (),
     ) -> int | None:
         """Find the first submitted polygon overlapping a stored map zone.
 
@@ -190,7 +201,7 @@ class EnvironmentZoneRepository:
             The lowest conflicting request index, or ``None`` when all are clear.
         """
         inputs = self._input_geometries(geometry_jsons)
-        result = await session.execute(
+        statement = (
             select(inputs.c.zone_index)
             .select_from(inputs)
             .join(EnvironmentZone, EnvironmentZone.map_id == map_id)
@@ -200,7 +211,67 @@ class EnvironmentZoneRepository:
             .order_by(inputs.c.zone_index, EnvironmentZone.id)
             .limit(1)
         )
+        if excluded_zone_ids:
+            statement = statement.where(~EnvironmentZone.id.in_(excluded_zone_ids))
+        result = await session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_existing_ids(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        zone_ids: Sequence[UUID],
+        ctx: AppContext,
+    ) -> set[UUID]:
+        """Return submitted IDs that still belong to the specified map."""
+        if not zone_ids:
+            return set()
+        result = await session.scalars(
+            select(EnvironmentZone.id).where(
+                EnvironmentZone.map_id == map_id,
+                EnvironmentZone.id.in_(zone_ids),
+            )
+        )
+        return set(result)
+
+    async def delete_many(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        zone_ids: Sequence[UUID],
+        ctx: AppContext,
+    ) -> None:
+        """Hard-delete the supplied environment zones within their parent map."""
+        if not zone_ids:
+            return
+        await session.execute(
+            delete(EnvironmentZone).where(
+                EnvironmentZone.map_id == map_id,
+                EnvironmentZone.id.in_(zone_ids),
+            )
+        )
+
+    async def update_many(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        zones: Sequence[tuple[UUID, EnvironmentZoneType, str]],
+        ctx: AppContext,
+    ) -> None:
+        """Update already-validated zones while preserving their map ownership."""
+        for zone_id, zone_type, geometry_json in zones:
+            await session.execute(
+                update(EnvironmentZone)
+                .where(
+                    EnvironmentZone.map_id == map_id,
+                    EnvironmentZone.id == zone_id,
+                )
+                .values(
+                    type=zone_type,
+                    geometry=self._geometry(geometry_json),
+                    updated_at=func.now(),
+                )
+            )
 
     async def create_many(
         self,

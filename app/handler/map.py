@@ -17,29 +17,33 @@ from app.common.schemas.map import (
     MapBoundarySaveDTO,
     MapCreateDTO,
     MapDetailInfo,
-    EnvironmentZonesCreateDTO,
+    EnvironmentZonesSaveDTO,
     MapInfo,
     MapListInfo,
     MapListQuery,
 )
 from app.common.schemas.user import Credential
 from app.services.map import MapService
+from app.services.environment_zones import EnvironmentZonesService
 
 
 class MapHandler:
-    def __init__(self, service: MapService) -> None:
+    def __init__(
+        self, service: MapService, environment_zones_service: EnvironmentZonesService
+    ) -> None:
         self.service = service
+        self.environment_zones_service = environment_zones_service
 
     @exception_handler
-    async def create_environment_zones(
+    async def save_environment_zones(
         self,
-        zones_create: EnvironmentZonesCreateDTO,
+        zones_create: EnvironmentZonesSaveDTO,
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
     ) -> None:
         ctx = AppContext(
             trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES, actor=credential.id
         )
-        await self.service.create_environment_zones(
+        await self.environment_zones_service.save_environment_zones(
             zones_create=zones_create,
             group_id=credential.active_group_id,
             credential=credential,
@@ -52,7 +56,9 @@ class MapHandler:
         boundary_save: MapBoundarySaveDTO,
         credential: Credential = Depends(AuthMiddleware.auth_middleware),
     ) -> BaseResponse[MapBoundaryInfo]:
-        ctx = AppContext(trace_id=uuid4(), action=SAVE_MAP_BOUNDARY, actor=credential.id)
+        ctx = AppContext(
+            trace_id=uuid4(), action=SAVE_MAP_BOUNDARY, actor=credential.id
+        )
         boundary = await self.service.save_boundary(
             boundary_save=boundary_save,
             group_id=credential.active_group_id,
@@ -60,7 +66,9 @@ class MapHandler:
             ctx=ctx,
         )
         return BaseResponse[MapBoundaryInfo](
-            data=boundary, message="Map boundary saved", statusCode=200,
+            data=boundary,
+            message="Map boundary saved",
+            statusCode=200,
         )
 
     @exception_handler
