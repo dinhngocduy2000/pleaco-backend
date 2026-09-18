@@ -18,6 +18,19 @@ from app.models.tag import Tag
 
 
 class MapRepository:
+    async def exists_by_id_and_group(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        group_id: UUID,
+        ctx: AppContext,
+    ) -> bool:
+        """Return whether a map belongs to the supplied group."""
+        result = await session.execute(
+            select(exists().where(Map.id == map_id, Map.group_id == group_id))
+        )
+        return bool(result.scalar_one())
+
     async def get_detail_by_id_and_group(
         self,
         session: AsyncSession,

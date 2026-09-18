@@ -21,7 +21,11 @@ from app.external.queues.topics.user_verification import UserVerificationTopic
 from app.external.queues.topics.add_group_member import AddGroupMemberTopic
 from app.external.queues.topics.robot_status import RobotStatusTopic
 from app.external.mqtt.robot_status import RobotStatusMqttIngestion
+from app.external.realtime.handlers import SocketIOHandler, register_socketio_handlers
+from app.external.realtime.rooms import RoomService
 from app.external.realtime.robot_status import RobotStatusWebSocketManager
+from app.external.realtime.session import SocketSessionService
+from app.external.realtime.socket import create_socketio_app, socket_server
 from app.external.redis.redis import RedisClient
 from app.handler.auth import AuthHandler
 from app.handler.bot import BotHandler
@@ -44,6 +48,7 @@ from app.services.bot import BotService
 from app.services.group import GroupService
 from app.services.environment_zones import EnvironmentZonesService
 from app.services.map import MapService
+from app.services.map_room import MapRoomService
 from app.services.tag import TagService
 from app.services.user import UserService
 from app.services.bot_status import BotStatusService
@@ -108,6 +113,19 @@ class App:
                 repo=registry,
                 permission_service=permission_service,
             )
+            room_service = RoomService(socket_server)
+            session_service = SocketSessionService(socket_server)
+            map_room_service = MapRoomService(
+                map_service=map_service,
+                room_service=room_service,
+            )
+            socketio_handler = SocketIOHandler(
+                permission_service=permission_service,
+                room_service=room_service,
+                session_service=session_service,
+                map_room_service=map_room_service,
+            )
+            register_socketio_handlers(socket_server, socketio_handler)
             environment_zones_service = EnvironmentZonesService(
                 repo=registry,
                 permission_service=permission_service,
@@ -252,4 +270,5 @@ class App:
         self.application.add_event_handler("shutdown", self.on_terminate_app())
 
 
-app = App().application
+fastapi_app = App().application
+app = create_socketio_app(fastapi_app)

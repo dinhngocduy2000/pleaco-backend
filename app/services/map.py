@@ -42,6 +42,30 @@ class MapService:
         self.repo = repo
         self.permission_service = permission_service
 
+    @require_permission(GroupRole.GUEST)
+    async def ensure_realtime_access(
+        self,
+        map_id: UUID,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> None:
+        """Authorize read access to a map without loading its detail graph."""
+        if group_id is None or group_id != credential.active_group_id:
+            raise ForbiddenException(message="A group must be selected")
+
+        async def _ensure_access(session: AsyncSession) -> None:
+            exists = await self.repo.map_repo().exists_by_id_and_group(
+                session=session,
+                map_id=map_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if not exists:
+                raise NotFoundException(message="Map not found")
+
+        await self.repo.transaction_wrapper(_ensure_access)
+
     @require_permission(GroupRole.ADMIN)
     async def save_boundary(
         self,
