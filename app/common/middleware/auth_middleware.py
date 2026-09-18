@@ -4,6 +4,7 @@ from typing import Optional
 import uuid
 from fastapi import HTTPException, Request, status
 import jwt
+from starlette.requests import HTTPConnection
 from app.common.context import AppContext
 from app.common.enum.context_actions import AUTHENTICATE_USER
 from app.common.enum.user_status import UserStatus
@@ -85,8 +86,8 @@ class AuthMiddleware:
         return credential
 
     @classmethod
-    async def _validate_cookie_tokens(
-        cls, request: Request, ctx: AppContext
+    async def validate_cookie_tokens(
+        cls, request: HTTPConnection, ctx: AppContext
     ) -> Credential:
         logger.info(msg=f"Validating tokens in cookies and cache...", context=ctx)
         access_token = request.cookies.get("access_token")
@@ -109,10 +110,17 @@ class AuthMiddleware:
         return credential
 
     @classmethod
+    async def _validate_cookie_tokens(
+        cls, request: HTTPConnection, ctx: AppContext
+    ) -> Credential:
+        """Backward-compatible alias for existing realtime callers."""
+        return await cls.validate_cookie_tokens(request=request, ctx=ctx)
+
+    @classmethod
     async def auth_middleware(cls, request: Request) -> Credential:
         try:
             ctx = AppContext(trace_id=uuid.uuid4(), action=AUTHENTICATE_USER)
-            credential: Credential = await cls._validate_cookie_tokens(request, ctx)
+            credential: Credential = await cls.validate_cookie_tokens(request, ctx)
             logger.info(msg=f"Credential authorized", context=ctx)
 
             return credential

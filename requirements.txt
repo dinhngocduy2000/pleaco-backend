@@ -36,6 +36,7 @@ Pygments==2.19.2
 PyJWT==2.10.1
 python-dotenv==1.2.1
 python-multipart==0.0.21
+python-socketio==5.17.0
 PyYAML==6.0.3
 redis==5.2.1
 rich==14.2.0
