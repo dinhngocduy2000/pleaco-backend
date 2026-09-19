@@ -23,7 +23,7 @@ from app.external.queues.topics.robot_status import RobotStatusTopic
 from app.external.mqtt.robot_status import RobotStatusMqttIngestion
 from app.external.realtime.handlers import SocketIOHandler, register_socketio_handlers
 from app.external.realtime.rooms import RoomService
-from app.external.realtime.robot_status import RobotStatusWebSocketManager
+from app.external.realtime.robot_status import RobotStatusRealtimePublisher
 from app.external.realtime.session import SocketSessionService
 from app.external.realtime.socket import create_socketio_app, socket_server
 from app.external.redis.redis import RedisClient
@@ -41,7 +41,6 @@ from app.router.group import GroupRouter
 from app.router.mail import MailRouter
 from app.router.map import MapRouter
 from app.router.user import UserRouter
-from app.router.realtime import RealtimeRouter
 from app.router.tag import TagRouter
 from app.services.auth import AuthService
 from app.services.bot import BotService
@@ -81,9 +80,10 @@ class App:
                 verification_topic=verification_topic,
             )
             permission_service = PermissionService(repo=registry)
-            websocket_manager = RobotStatusWebSocketManager()
+            room_service = RoomService(socket_server)
+            robot_status_publisher = RobotStatusRealtimePublisher(room_service)
             bot_status_service = BotStatusService(
-                repo=registry, websocket_manager=websocket_manager
+                repo=registry, realtime_publisher=robot_status_publisher
             )
             robot_status_topic = RobotStatusTopic(rabbitmq_client, bot_status_service)
             mqtt_ingestion = RobotStatusMqttIngestion(robot_status_topic)
@@ -113,7 +113,6 @@ class App:
                 repo=registry,
                 permission_service=permission_service,
             )
-            room_service = RoomService(socket_server)
             session_service = SocketSessionService(socket_server)
             map_room_service = MapRoomService(
                 map_service=map_service,
@@ -159,7 +158,6 @@ class App:
             bot_router = BotRouter(handler=bot_handler)
             tag_router = TagRouter(handler=tag_handler)
             map_router = MapRouter(handler=map_handler)
-            realtime_router = RealtimeRouter(websocket_manager, permission_service)
             self.application.include_router(
                 user_router.router,
                 prefix=settings.API_V1_PREFIX + "/users",
@@ -195,11 +193,6 @@ class App:
                 prefix=settings.API_V1_PREFIX + "/maps",
                 tags=["Maps"],
             )
-            self.application.include_router(
-                realtime_router.router,
-                prefix=settings.API_V1_PREFIX,
-            )
-
         return start_app
 
     def on_terminate_app(self) -> Callable:

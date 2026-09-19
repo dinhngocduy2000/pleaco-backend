@@ -52,12 +52,12 @@ class FakeRegistry:
         return await callback(object())
 
 
-class FakeWebSocketManager:
+class FakeRealtimePublisher:
     def __init__(self):
         self.events = []
 
-    async def broadcast(self, group_id, payload):
-        self.events.append((group_id, payload))
+    async def publish(self, **kwargs):
+        self.events.append(kwargs)
 
 
 def event(robot_id, sequence=2, *, status=RobotConnectionStatus.ONLINE, ip="192.168.10.24"):
@@ -72,10 +72,10 @@ def event(robot_id, sequence=2, *, status=RobotConnectionStatus.ONLINE, ip="192.
     )
 
 
-def robot(robot_id):
+def robot(robot_id, *, group_id=None):
     return SimpleNamespace(
         id=robot_id,
-        group_id=uuid4(),
+        group_id=group_id or uuid4(),
         ip_address="192.168.10.24",
         connection_status=RobotConnectionStatus.OFFLINE,
         operational_status=RobotOperationalStatus.IDLE,
@@ -105,24 +105,28 @@ async def test_reconciles_cache_and_database_state(
     if cache is not None:
         redis.values[f"robot:{robot_id}:state"] = json.dumps(cache)
     registry = FakeRegistry(state, redis)
-    sockets = FakeWebSocketManager()
+    publisher = FakeRealtimePublisher()
 
-    await BotStatusService(registry, sockets).process_status_event(
+    await BotStatusService(registry, publisher).process_status_event(
         event(robot_id, status=incoming_status)
     )
 
     assert registry._bot_repository.update_calls == expected_writes
-    assert len(sockets.events) == expected_broadcasts
+    assert len(publisher.events) == expected_broadcasts
     assert json.loads(redis.values[f"robot:{robot_id}:state"])["last_sequence_number"] == 2
 
 
 @pytest.mark.asyncio
 async def test_rejects_unknown_duplicate_and_stale_events():
     robot_id = uuid4()
-    sockets = FakeWebSocketManager()
+    publisher = FakeRealtimePublisher()
     unknown_registry = FakeRegistry(None, FakeRedis())
-    await BotStatusService(unknown_registry, sockets).process_status_event(event(robot_id))
+    await BotStatusService(unknown_registry, publisher).process_status_event(
+        event(robot_id)
+    )
     assert unknown_registry._bot_repository.update_calls == 0
+    assert unknown_registry._redis_client.values == {}
+    assert publisher.events == []
 
     state = robot(robot_id)
     duplicate = event(robot_id)
@@ -135,7 +139,7 @@ async def test_rejects_unknown_duplicate_and_stale_events():
     }
     registry = FakeRegistry(state, FakeRedis())
     registry._redis_client.values[f"robot:{robot_id}:state"] = json.dumps(cache)
-    service = BotStatusService(registry, sockets)
+    service = BotStatusService(registry, publisher)
     await service.process_status_event(duplicate)
     await service.process_status_event(event(robot_id, sequence=1))
     assert registry._bot_repository.update_calls == 0
@@ -146,12 +150,34 @@ async def test_updates_ip_metadata_without_changing_robot_identity():
     robot_id = uuid4()
     state = robot(robot_id)
     registry = FakeRegistry(state, FakeRedis())
-    sockets = FakeWebSocketManager()
+    publisher = FakeRealtimePublisher()
 
-    await BotStatusService(registry, sockets).process_status_event(
+    await BotStatusService(registry, publisher).process_status_event(
         event(robot_id, status=RobotConnectionStatus.OFFLINE, ip="192.168.10.31")
     )
 
     assert registry._bot_repository.update_calls == 1
     assert state.id == robot_id
     assert state.ip_address == "192.168.10.31"
+
+
+@pytest.mark.asyncio
+async def test_realtime_destination_comes_from_persisted_robot_group():
+    robot_id = uuid4()
+    trusted_group_id = uuid4()
+    untrusted_group_id = uuid4()
+    state = robot(robot_id, group_id=trusted_group_id)
+    registry = FakeRegistry(state, FakeRedis())
+    publisher = FakeRealtimePublisher()
+    untrusted_payload = event(robot_id).model_dump()
+    untrusted_payload["group_id"] = untrusted_group_id
+
+    await BotStatusService(registry, publisher).process_status_event(
+        RobotStatusEvent.model_validate(untrusted_payload)
+    )
+
+    assert len(publisher.events) == 1
+    published = publisher.events[0]
+    assert published["group_id"] == trusted_group_id
+    assert published["group_id"] != untrusted_group_id
+    assert published["robot_id"] == robot_id

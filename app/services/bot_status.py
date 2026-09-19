@@ -14,9 +14,9 @@ logger = Logger()
 
 
 class BotStatusService:
-    def __init__(self, repo: Registry, websocket_manager) -> None:
+    def __init__(self, repo: Registry, realtime_publisher) -> None:
         self.repo = repo
-        self._websocket_manager = websocket_manager
+        self._realtime_publisher = realtime_publisher
 
     @staticmethod
     def _cache_key(robot_id) -> str:
@@ -44,23 +44,18 @@ class BotStatusService:
             )
         )
         if meaningful_change:
-            await self._websocket_manager.broadcast(
-                state["group_id"],
-                {
-                    "type": "robot.status.changed",
-                    "data": {
-                        "robot_id": str(event.robot_id),
-                        "ip_address": state["ip_address"],
-                        "connection_status": state["connection_status"],
-                        "operational_status": state["operational_status"],
-                        "last_seen_at": received_at.isoformat(),
-                    },
-                },
+            await self._realtime_publisher.publish(
+                group_id=state["group_id"],
+                robot_id=event.robot_id,
+                ip_address=state["ip_address"],
+                connection_status=state["connection_status"],
+                operational_status=state["operational_status"],
+                last_seen_at=received_at,
             )
         else:
             logger.info(
                 msg=(
-                    f"Skipped WebSocket broadcast for robot {event.robot_id}; "
+                    f"Skipped Socket.IO publish for robot {event.robot_id}; "
                     "the accepted event did not change connection, operational, or IP state"
                 )
             )
@@ -95,6 +90,8 @@ class BotStatusService:
         elif cache is None:
             # Redis is being seeded from the durable, already matching state.
             next_state = database_state
+        # The destination group is derived only from the persisted robot. No
+        # MQTT, RabbitMQ, or frontend payload is allowed to select this room.
         return ({**next_state, "group_id": bot.group_id}, meaningful_change)
 
     async def _get_cache(self, robot_id):
