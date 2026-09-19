@@ -78,3 +78,15 @@ class RobotStatusEvent(BaseModel):
             "last_sequence_number": self.sequence_number,
             "last_message_id": str(self.message_id),
         }
+
+
+class RobotStatusRealtimePayload(BaseModel):
+    """Public Socket.IO payload for a reconciled robot status change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    robot_id: UUID
+    ip_address: IPvAnyAddress | None = None
+    connection_status: RobotConnectionStatus
+    operational_status: RobotOperationalStatus
+    last_seen_at: datetime

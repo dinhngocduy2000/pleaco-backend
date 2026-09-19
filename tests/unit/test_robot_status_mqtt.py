@@ -34,9 +34,15 @@ async def test_normalizes_only_topic_matched_robot_messages():
     robot_id = uuid4()
     topic = FakeTopic()
     ingestion = RobotStatusMqttIngestion(topic)
+    payload_with_group = json.loads(payload(robot_id).decode())
+    payload_with_group["group_id"] = str(uuid4())
 
     await ingestion.handle_message(f"pleco/robots/{robot_id}/status", payload(robot_id))
     await ingestion.handle_message(f"pleco/robots/{robot_id}/status", payload(uuid4()))
+    await ingestion.handle_message(
+        f"pleco/robots/{robot_id}/status",
+        json.dumps(payload_with_group).encode(),
+    )
 
     assert len(topic.events) == 1
     assert topic.events[0].robot_id == robot_id

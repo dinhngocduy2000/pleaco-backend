@@ -1,77 +1,56 @@
-"""In-process, group-scoped WebSocket delivery for robot status changes."""
+"""Socket.IO delivery for group-scoped robot status changes."""
 
-import asyncio
-from collections import defaultdict
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import WebSocket
-
+from app.common.enum.robot import RobotConnectionStatus, RobotOperationalStatus
 from app.common.middleware.logger import Logger
+from app.common.schemas.robot_status import RobotStatusRealtimePayload
+from app.external.realtime.rooms import RoomOperationError, RoomService, Rooms
 
 logger = Logger()
 
 
-class RobotStatusWebSocketManager:
-    def __init__(self) -> None:
-        self._connections: dict[UUID, set[WebSocket]] = defaultdict(set)
-        self._lock = asyncio.Lock()
+class RobotStatusRealtimePublisher:
+    """Publish reconciled robot status to its persisted group's room."""
 
-    async def connect(self, group_id: UUID, websocket: WebSocket) -> None:
-        await websocket.accept()
-        async with self._lock:
-            self._connections[group_id].add(websocket)
-            connection_count = len(self._connections[group_id])
-        logger.info(
-            msg=(
-                f"Robot-status WebSocket connected for group {group_id}; "
-                f"active_connections={connection_count}"
-            )
-        )
+    event_name = "robot.status"
 
-    async def disconnect(self, group_id: UUID, websocket: WebSocket) -> None:
-        async with self._lock:
-            connections = self._connections.get(group_id)
-            if connections is not None:
-                connections.discard(websocket)
-                if not connections:
-                    self._connections.pop(group_id, None)
-                connection_count = len(connections)
-            else:
-                connection_count = 0
-        logger.info(
-            msg=(
-                f"Robot-status WebSocket disconnected for group {group_id}; "
-                f"active_connections={connection_count}"
-            )
-        )
+    def __init__(self, room_service: RoomService) -> None:
+        self._room_service = room_service
 
-    async def broadcast(self, group_id: UUID, payload: dict) -> None:
-        async with self._lock:
-            recipients = tuple(self._connections.get(group_id, set()))
-        logger.info(
-            msg=(
-                f"Broadcasting WebSocket event type={payload.get('type')} "
-                f"to group {group_id}; recipients={len(recipients)}"
+    async def publish(
+        self,
+        *,
+        group_id: UUID,
+        robot_id: UUID,
+        ip_address: str | None,
+        connection_status: RobotConnectionStatus | str,
+        operational_status: RobotOperationalStatus | str,
+        last_seen_at: datetime,
+    ) -> None:
+        """Emit one JSON-safe status payload to the trusted group room.
+
+        Realtime delivery is best-effort. A failure is logged but not raised so
+        an event already reconciled in PostgreSQL is not requeued by RabbitMQ.
+        """
+        payload = RobotStatusRealtimePayload(
+            robot_id=robot_id,
+            ip_address=ip_address,
+            connection_status=connection_status,
+            operational_status=operational_status,
+            last_seen_at=last_seen_at,
+        ).model_dump(mode="json")
+        try:
+            await self._room_service.emit(
+                self.event_name,
+                payload,
+                Rooms.group(group_id),
             )
-        )
-        disconnected: list[WebSocket] = []
-        for websocket in recipients:
-            try:
-                await websocket.send_json(payload)
-                logger.info(
-                    msg=(
-                        f"Delivered WebSocket event type={payload.get('type')} "
-                        f"to group {group_id}"
-                    )
+        except RoomOperationError:
+            logger.exception(
+                msg=(
+                    "Unable to deliver robot status through Socket.IO "
+                    f"for robot {robot_id} in group {group_id}"
                 )
-            except Exception as error:
-                disconnected.append(websocket)
-                logger.warning(
-                    msg=(
-                        f"WebSocket delivery failed for group {group_id}: {error}"
-                    )
-                )
-        for websocket in disconnected:
-            await self.disconnect(group_id, websocket)
-        if disconnected:
-            logger.warning(msg="Removed disconnected robot-status WebSocket client(s)")
+            )
