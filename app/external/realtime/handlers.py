@@ -24,14 +24,30 @@ logger = Logger()
 
 
 def _success() -> dict[str, bool]:
+    """Return the stable acknowledgement for a successful client event."""
     return {"success": True}
 
 
 def _failure(code: str) -> dict[str, bool | str]:
+    """Return a failure acknowledgement without exposing internal details.
+
+    Args:
+        code: Stable public error code understood by the frontend.
+
+    Returns:
+        A Socket.IO acknowledgement containing ``success`` and ``error``.
+    """
     return {"success": False, "error": code}
 
 
 class SocketIOHandler:
+    """Adapt Socket.IO lifecycle and map events to Pleco application services.
+
+    The handler owns transport parsing, session lookup, acknowledgement
+    formatting, and exception translation. Domain authorization remains in
+    services, while room mechanics remain in realtime adapters.
+    """
+
     def __init__(
         self,
         permission_service: PermissionService,
@@ -39,6 +55,15 @@ class SocketIOHandler:
         session_service: SocketSessionService,
         map_room_service: MapRoomService,
     ) -> None:
+        """Initialize the Socket.IO event adapter.
+
+        Args:
+            permission_service: Resolves current active-group membership during
+                the connection handshake.
+            room_service: Joins automatic user and group rooms.
+            session_service: Stores trusted identity for later socket events.
+            map_room_service: Authorizes dynamic map membership changes.
+        """
         self._permission_service = permission_service
         self._room_service = room_service
         self._session_service = session_service
@@ -47,15 +72,36 @@ class SocketIOHandler:
     async def connect(
         self, sid: str, environ: dict[str, Any], auth: Any = None
     ) -> None:
+        """Authenticate a connection and join its automatic audience rooms.
+
+        Authentication reuses the existing HTTP-only cookie flow. Identity from
+        the optional Socket.IO ``auth`` payload is intentionally ignored. An
+        authenticated user always joins ``user:{user_id}``; a user with a valid
+        active group also joins ``group:{group_id}``.
+
+        Args:
+            sid: Socket.IO connection identifier assigned by the server.
+            environ: Engine.IO request environment containing the ASGI scope.
+            auth: Optional client handshake payload; unused for authentication.
+
+        Raises:
+            socketio.exceptions.ConnectionRefusedError: If cookie validation,
+                active-group membership validation, session persistence, or an
+                automatic room operation fails.
+        """
         del auth
         ctx = AppContext(trace_id=uuid4(), action=AUTHENTICATE_USER)
         try:
+            # HTTPConnection exposes cookies for both HTTP and WebSocket ASGI
+            # scopes without introducing a Socket.IO-specific auth mechanism.
             scope = environ.get("asgi.scope")
             if not isinstance(scope, dict):
                 raise ValueError("Missing ASGI scope")
             credential = await AuthMiddleware.validate_cookie_tokens(
                 HTTPConnection(scope), ctx
             )
+            # A group recorded in a token may have become stale after issuance,
+            # so membership is verified again before joining its automatic room.
             if credential.active_group_id is not None:
                 await self._permission_service.get_group_member(
                     credential=credential,
@@ -82,9 +128,27 @@ class SocketIOHandler:
         logger.info(msg=f"Authorized Socket.IO connection sid={sid}", context=ctx)
 
     async def disconnect(self, sid: str, reason: str | None = None) -> None:
+        """Record a disconnect while Socket.IO performs session/room cleanup.
+
+        Args:
+            sid: Socket.IO connection identifier being removed.
+            reason: Protocol-provided disconnect reason, when available.
+        """
         logger.info(msg=f"Socket.IO disconnected sid={sid}; reason={reason}")
 
     async def subscribe_map(self, sid: str, data: Any) -> dict[str, bool | str]:
+        """Handle an authorized ``map.subscribe`` event.
+
+        Args:
+            sid: Socket.IO connection identifier requesting membership.
+            data: Untrusted event payload expected to contain ``mapId``.
+
+        Returns:
+            A success acknowledgement, or a stable failure code for missing
+            authentication, invalid input, denied access, or room failures.
+        """
+        # Resolve identity before parsing resource input so client-supplied data
+        # never decides which user or group is used for authorization.
         try:
             session = await self._session_service.get(sid)
         except SocketSessionNotFoundError:
@@ -118,6 +182,16 @@ class SocketIOHandler:
         return _success()
 
     async def unsubscribe_map(self, sid: str, data: Any) -> dict[str, bool | str]:
+        """Handle an idempotent ``map.unsubscribe`` event.
+
+        Args:
+            sid: Socket.IO connection identifier leaving the map audience.
+            data: Untrusted event payload expected to contain ``mapId``.
+
+        Returns:
+            A success acknowledgement, or a stable failure code for missing
+            authentication, invalid input, or room-operation failures.
+        """
         try:
             session = await self._session_service.get(sid)
         except SocketSessionNotFoundError:
@@ -147,6 +221,13 @@ class SocketIOHandler:
 def register_socketio_handlers(
     server: socketio.AsyncServer, handler: SocketIOHandler
 ) -> None:
+    """Bind Pleco event handlers to the default Socket.IO namespace.
+
+    Args:
+        server: Shared process-wide Socket.IO server.
+        handler: Fully initialized transport adapter for connection and map
+            events.
+    """
     server.on("connect", handler.connect, namespace="/")
     server.on("disconnect", handler.disconnect, namespace="/")
     server.on("map.subscribe", handler.subscribe_map, namespace="/")

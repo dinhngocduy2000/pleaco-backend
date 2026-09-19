@@ -4,7 +4,7 @@ This guide describes how the Pleco backend creates Socket.IO connections, assign
 automatic rooms, authorizes map-room subscriptions, and routes room-scoped events.
 
 The Socket.IO endpoint uses the default namespace `/` and transport path
-`/socket.io`. The existing native robot-status WebSocket at
+`/api/v1/ws`. The existing native robot-status WebSocket at
 `/api/v1/realtime/robots` remains a separate, unchanged flow.
 
 ## Component Map
@@ -35,7 +35,7 @@ flowchart TD
     H[Register connect, disconnect,<br/>map.subscribe, map.unsubscribe]
 
     U --> A
-    A -->|/socket.io traffic| S
+    A -->|/api/v1/ws traffic| S
     A -->|all other ASGI traffic| F
     F --> W --> D --> H
 ```
