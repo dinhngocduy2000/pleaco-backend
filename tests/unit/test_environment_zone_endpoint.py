@@ -542,7 +542,7 @@ async def test_http_contract_authentication_validation_and_openapi():
     service, credential, map_record, _, _ = setup_service()
     app = FastAPI()
     app.include_router(
-        MapRouter(MapHandler(SimpleNamespace(), service)).router,
+        MapRouter(MapHandler(SimpleNamespace(), service, SimpleNamespace())).router,
         prefix="/api/v1/maps",
     )
     path = "/api/v1/maps/zones"

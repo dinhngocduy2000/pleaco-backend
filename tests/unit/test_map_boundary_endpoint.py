@@ -193,7 +193,7 @@ async def test_http_contract_authentication_and_openapi():
     service, credential, record, maps, boundaries = setup_service()
     app = FastAPI()
     app.include_router(
-        MapRouter(MapHandler(service, SimpleNamespace())).router,
+        MapRouter(MapHandler(service, SimpleNamespace(), SimpleNamespace())).router,
         prefix="/api/v1/maps",
     )
     path = "/api/v1/maps/boundary"
