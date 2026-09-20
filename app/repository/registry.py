@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.common.types import T
 from app.external.redis.redis import RedisClient
 from app.repository.group import GroupRepository
+from app.repository.docking_station import DockingStationRepository
 from app.repository.environment_zone import EnvironmentZoneRepository
 from app.repository.group_members import GroupMembersRepository
 from app.repository.map import MapRepository
@@ -29,6 +30,7 @@ class Registry:
     _map_repo: MapRepository
     _map_boundary_repo: MapBoundaryRepository
     _environment_zone_repo: EnvironmentZoneRepository
+    _docking_station_repo: DockingStationRepository
     _map_tags_repo: MapTagsRepository
 
     def __init__(self, pg_engine: AsyncEngine, redis_client: RedisClient) -> None:
@@ -43,6 +45,7 @@ class Registry:
         self._map_repo = MapRepository()
         self._map_boundary_repo = MapBoundaryRepository()
         self._environment_zone_repo = EnvironmentZoneRepository()
+        self._docking_station_repo = DockingStationRepository()
         self._map_tags_repo = MapTagsRepository()
         self._redis_client = redis_client
 
@@ -94,3 +97,6 @@ class Registry:
 
     def map_tags_repo(self) -> MapTagsRepository:
         return self._map_tags_repo
+
+    def docking_station_repo(self) -> DockingStationRepository:
+        return self._docking_station_repo

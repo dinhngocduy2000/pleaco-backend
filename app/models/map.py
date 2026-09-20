@@ -21,6 +21,7 @@ from app.common.enum.map import MapStatus
 from app.models.map_tags import map_tags
 
 if TYPE_CHECKING:
+    from app.models.docking_station import DockingStation
     from app.models.environment_zone import EnvironmentZone
     from app.models.map_boundary import MapBoundary
     from app.models.group import Group
@@ -84,6 +85,12 @@ class Map(Base):
     )
     environment_zones: Mapped[list["EnvironmentZone"]] = relationship(
         "EnvironmentZone",
+        back_populates="map",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    docking_stations: Mapped[list["DockingStation"]] = relationship(
+        "DockingStation",
         back_populates="map",
         cascade="all, delete-orphan",
         passive_deletes=True,

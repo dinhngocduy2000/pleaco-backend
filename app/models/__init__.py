@@ -4,6 +4,7 @@ from app.models.group_members import GroupMembers
 from app.models.map import Map
 from app.models.map_boundary import MapBoundary
 from app.models.environment_zone import EnvironmentZone
+from app.models.docking_station import DockingStation
 from app.models.map_tags import map_tags
 from app.models.robot import Robot
 from app.models.robot_tags import robot_tags
@@ -16,6 +17,7 @@ __all__ = [
     "Map",
     "MapBoundary",
     "EnvironmentZone",
+    "DockingStation",
     "map_tags",
     "Robot",
     "robot_tags",

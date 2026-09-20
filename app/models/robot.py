@@ -24,6 +24,7 @@ from app.core.database import Base
 from app.models.robot_tags import robot_tags
 
 if TYPE_CHECKING:
+    from app.models.docking_station import DockingStation
     from app.models.group import Group
     from app.models.map import Map
     from app.models.tag import Tag
@@ -114,6 +115,13 @@ class Robot(Base):
 
     group: Mapped["Group"] = relationship("Group", back_populates="robots")
     map: Mapped["Map | None"] = relationship("Map", back_populates="robots")
+    docking_station: Mapped["DockingStation | None"] = relationship(
+        "DockingStation",
+        back_populates="robot",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     tags: Mapped[list["Tag"]] = relationship(
         "Tag", secondary=robot_tags, back_populates="robots"
     )

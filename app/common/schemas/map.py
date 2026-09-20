@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.common.enum.environment_zone import EnvironmentZoneType
+from app.common.enum.docking_station import DockingStationHeading
 from app.common.enum.map import MapBoundarySource, MapStatus
 from app.common.enum.robot import (
     RobotConnectionStatus,
@@ -73,6 +74,31 @@ class MapBoundaryInfo(BaseModel):
     map_id: UUID
     source: MapBoundarySource
     geometry: PolygonGeometry
+    created_at: datetime
+    updated_at: datetime
+
+
+class DockingStationCreateDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    geometry: PolygonGeometry
+    heading: DockingStationHeading | None = DockingStationHeading.SOUTH
+    robot_id: UUID | None = None
+
+    @field_validator("heading")
+    @classmethod
+    def default_heading(
+        cls, heading: DockingStationHeading | None
+    ) -> DockingStationHeading:
+        return heading if heading is not None else DockingStationHeading.SOUTH
+
+
+class DockingStationInfo(BaseModel):
+    id: UUID
+    map_id: UUID
+    robot_id: UUID | None
+    geometry: PolygonGeometry
+    heading: DockingStationHeading
     created_at: datetime
     updated_at: datetime
 

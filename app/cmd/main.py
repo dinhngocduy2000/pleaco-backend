@@ -45,6 +45,7 @@ from app.router.tag import TagRouter
 from app.services.auth import AuthService
 from app.services.bot import BotService
 from app.services.group import GroupService
+from app.services.docking_station import DockingStationService
 from app.services.environment_zones import EnvironmentZonesService
 from app.services.map import MapService
 from app.services.map_room import MapRoomService
@@ -125,6 +126,9 @@ class App:
                 map_room_service=map_room_service,
             )
             register_socketio_handlers(socket_server, socketio_handler)
+            docking_station_service = DockingStationService(
+                repo=registry, permission_service=permission_service
+            )
             environment_zones_service = EnvironmentZonesService(
                 repo=registry,
                 permission_service=permission_service,
@@ -148,6 +152,7 @@ class App:
             map_handler = MapHandler(
                 service=map_service,
                 environment_zones_service=environment_zones_service,
+                docking_station_service=docking_station_service,
             )
 
             # ------------ Router ------------

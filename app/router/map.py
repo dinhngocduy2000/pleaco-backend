@@ -1,7 +1,13 @@
 from fastapi import APIRouter, status
 
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
-from app.common.schemas.map import MapBoundaryInfo, MapDetailInfo, MapInfo, MapListInfo
+from app.common.schemas.map import (
+    DockingStationInfo,
+    MapBoundaryInfo,
+    MapDetailInfo,
+    MapInfo,
+    MapListInfo,
+)
 from app.handler.map import MapHandler
 
 
@@ -9,6 +15,31 @@ class MapRouter:
     def __init__(self, handler: MapHandler) -> None:
         self.router = APIRouter(prefix="", tags=["Maps"])
         self.handler = handler
+        self.router.add_api_route(
+            path="/{map_id}/stations",
+            endpoint=self.handler.create_docking_station,
+            methods=["POST"],
+            response_model=BaseResponse[DockingStationInfo],
+            status_code=status.HTTP_201_CREATED,
+            summary="Create a docking station",
+            description=(
+                "Owners and Admins may create a station within an active-group map's boundary. "
+                "Omitted or null heading defaults to SOUTH. An optional robot must belong "
+                "to this map and have no existing station. Polygon overlaps are allowed."
+            ),
+            responses={
+                400: {
+                    "description": "Missing boundary, invalid topology or containment, or robot assigned to another map"
+                },
+                401: {"description": "Authentication required"},
+                403: {"description": "Active-group Owner or Admin permission required"},
+                404: {"description": "Map or robot not found in the active group"},
+                409: {"description": "Robot already has a docking station"},
+                422: {
+                    "description": "Invalid identifiers, request fields, or geometry structure"
+                },
+            },
+        )
         self.router.add_api_route(
             path="/zones",
             endpoint=self.handler.save_environment_zones,
