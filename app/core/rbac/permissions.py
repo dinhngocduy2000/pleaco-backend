@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_BOT,
+    CREATE_DOCKING_STATION,
     CREATE_ENVIRONMENT_ZONES,
     CREATE_MAP,
     SAVE_MAP_BOUNDARY,
@@ -39,6 +40,7 @@ ROLE_HIERACHY = [
 
 ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
+        CREATE_DOCKING_STATION,
         CREATE_ENVIRONMENT_ZONES,
         SAVE_MAP_BOUNDARY,
         CREATE_BOT,
@@ -58,6 +60,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         LIST_GROUP_MEMBERS,
     },
     GroupRole.ADMIN: {
+        CREATE_DOCKING_STATION,
         CREATE_ENVIRONMENT_ZONES,
         SAVE_MAP_BOUNDARY,
         CREATE_BOT,

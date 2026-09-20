@@ -4,6 +4,7 @@ from fastapi import Depends, Query
 
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
+    CREATE_DOCKING_STATION,
     CREATE_ENVIRONMENT_ZONES,
     CREATE_MAP,
     LIST_MAPS,
@@ -13,6 +14,8 @@ from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.common.schemas.map import (
+    DockingStationCreateDTO,
+    DockingStationInfo,
     MapBoundaryInfo,
     MapBoundarySaveDTO,
     MapCreateDTO,
@@ -23,16 +26,44 @@ from app.common.schemas.map import (
     MapListQuery,
 )
 from app.common.schemas.user import Credential
+from app.services.docking_station import DockingStationService
 from app.services.map import MapService
 from app.services.environment_zones import EnvironmentZonesService
 
 
 class MapHandler:
     def __init__(
-        self, service: MapService, environment_zones_service: EnvironmentZonesService
+        self,
+        service: MapService,
+        environment_zones_service: EnvironmentZonesService,
+        docking_station_service: DockingStationService,
     ) -> None:
+        self.docking_station_service = docking_station_service
         self.service = service
         self.environment_zones_service = environment_zones_service
+
+    @exception_handler
+    async def create_docking_station(
+        self,
+        map_id: UUID,
+        station_create: DockingStationCreateDTO,
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[DockingStationInfo]:
+        ctx = AppContext(
+            trace_id=uuid4(), action=CREATE_DOCKING_STATION, actor=credential.id
+        )
+        station = await self.docking_station_service.create_docking_station(
+            map_id=map_id,
+            station_create=station_create,
+            group_id=credential.active_group_id,
+            credential=credential,
+            ctx=ctx,
+        )
+        return BaseResponse[DockingStationInfo](
+            data=station,
+            message="Docking station created",
+            statusCode=201,
+        )
 
     @exception_handler
     async def save_environment_zones(
