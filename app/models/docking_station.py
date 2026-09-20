@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class DockingStation(Base):
-    """A robot's docking polygon and heading in a map's local X/Y coordinates."""
+    """A docking polygon and heading, optionally assigned to a robot."""
 
     __tablename__ = "docking_station"
     __table_args__ = (
@@ -49,10 +49,10 @@ class DockingStation(Base):
         nullable=False,
         index=True,
     )
-    robot_id: Mapped[UUID] = mapped_column(
+    robot_id: Mapped[UUID | None] = mapped_column(
         PostgreSQL_UUID(as_uuid=True),
         ForeignKey("robots.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     geometry: Mapped[WKBElement] = mapped_column(
         LocalMapGeometry(
@@ -79,4 +79,6 @@ class DockingStation(Base):
     )
 
     map: Mapped["Map"] = relationship("Map", back_populates="docking_stations")
-    robot: Mapped["Robot"] = relationship("Robot", back_populates="docking_station")
+    robot: Mapped["Robot | None"] = relationship(
+        "Robot", back_populates="docking_station"
+    )

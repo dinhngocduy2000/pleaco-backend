@@ -239,6 +239,43 @@ async def test_robot_uniqueness_across_maps(db, other_map):
 
 
 @pytest.mark.asyncio
+async def test_multiple_unassigned_stations(db):
+    connection, map_ids, robot_ids = db
+    # Exercise both an explicit NULL and an omitted robot assignment.
+    await insert_station(connection, map_ids[0], None)
+    async with AsyncSession(
+        bind=connection, join_transaction_mode="create_savepoint"
+    ) as session:
+        session.add(
+            DockingStation(
+                map_id=map_ids[0],
+                heading=DockingStationHeading.NORTH,
+                geometry=WKTElement(POLYGON, srid=0),
+            )
+        )
+        await session.flush()
+        session.expunge_all()
+        stations = (
+            await session.scalars(
+                select(DockingStation).options(selectinload(DockingStation.robot))
+            )
+        ).all()
+        assert len(stations) == 2
+        assert all(
+            station.robot_id is None and station.robot is None for station in stations
+        )
+
+        robot = await session.get(Robot, robot_ids[0])
+        stations[0].robot = robot
+        await session.flush()
+        assert stations[0].robot_id == robot_ids[0]
+        with pytest.raises(DBAPIError):
+            async with session.begin_nested():
+                stations[1].robot_id = robot_ids[0]
+                await session.flush()
+
+
+@pytest.mark.asyncio
 async def test_independent_map_reference(db):
     connection, map_ids, robot_ids = db
     await insert_station(connection, map_ids[1], robot_ids[0])
@@ -318,7 +355,6 @@ async def test_invalid_geometry_rejected(db, geometry):
         "invalid_heading",
         "id",
         "map_id",
-        "robot_id",
         "geometry",
         "heading",
         "created_at",

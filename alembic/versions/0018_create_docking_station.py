@@ -43,7 +43,7 @@ def upgrade() -> None:
             "robot_id",
             postgresql.UUID(as_uuid=True),
             sa.ForeignKey("robots.id", ondelete="CASCADE"),
-            nullable=False,
+            nullable=True,
         ),
         sa.Column(
             "geometry",
