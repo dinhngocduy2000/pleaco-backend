@@ -149,6 +149,7 @@ class BotRepository:
         result = await session.execute(
             select(Robot)
             .where(Robot.id.in_(bot_ids), Robot.group_id == group_id)
+            .order_by(Robot.id)
             .with_for_update()
         )
         return list(result.scalars().all())

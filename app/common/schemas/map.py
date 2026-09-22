@@ -78,9 +78,10 @@ class MapBoundaryInfo(BaseModel):
     updated_at: datetime
 
 
-class DockingStationCreateDTO(BaseModel):
+class DockingStationSaveItemDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    id: UUID | None = None
     geometry: PolygonGeometry
     heading: DockingStationHeading | None = DockingStationHeading.SOUTH
     robot_id: UUID | None = None
@@ -91,6 +92,25 @@ class DockingStationCreateDTO(BaseModel):
         cls, heading: DockingStationHeading | None
     ) -> DockingStationHeading:
         return heading if heading is not None else DockingStationHeading.SOUTH
+
+
+class DockingStationsSaveDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    map_id: UUID
+    data: list[DockingStationSaveItemDTO] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def identifiers_must_be_unique(self) -> "DockingStationsSaveDTO":
+        for field in ("id", "robot_id"):
+            identifiers = [
+                getattr(item, field)
+                for item in self.data
+                if getattr(item, field) is not None
+            ]
+            if len(identifiers) != len(set(identifiers)):
+                raise ValueError(f"Docking station {field} values must be unique")
+        return self
 
 
 class DockingStationInfo(BaseModel):

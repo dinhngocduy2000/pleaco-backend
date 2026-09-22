@@ -8,13 +8,14 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.common.context import AppContext
-from app.common.enum.context_actions import CREATE_DOCKING_STATION
+from app.common.enum.context_actions import SAVE_DOCKING_STATIONS
 from app.common.enum.docking_station import DockingStationHeading
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import BaseException
 from app.common.middleware.auth_middleware import AuthMiddleware
-from app.common.schemas.map import DockingStationCreateDTO
+from app.common.schemas.map import DockingStationSaveItemDTO, DockingStationsSaveDTO
+from pydantic import ValidationError
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.handler.map import MapHandler
@@ -41,27 +42,33 @@ def setup_service(role=GroupRole.ADMIN):
         )
     )
     bots = SimpleNamespace(
-        get_by_id_and_group_for_update=AsyncMock(
-            return_value=SimpleNamespace(id=robot_id, map_id=map_id)
+        get_by_ids_and_group_for_update=AsyncMock(
+            return_value=[SimpleNamespace(id=robot_id, map_id=map_id)]
         )
     )
     now = datetime.now(timezone.utc)
 
-    async def create(**kwargs):
-        return dict(
-            id=uuid4(),
-            map_id=kwargs["map_id"],
-            robot_id=kwargs["robot_id"],
-            heading=kwargs["heading"],
-            geometry=polygon(),
-            created_at=now,
-            updated_at=now,
-        )
+    async def save_many(**kwargs):
+        return [
+            dict(
+                id=station_id or uuid4(),
+                map_id=kwargs["map_id"],
+                robot_id=robot_id,
+                heading=heading,
+                geometry=polygon(),
+                created_at=now,
+                updated_at=now,
+            )
+            for station_id, robot_id, heading, geometry_json in kwargs["stations"]
+        ]
 
     stations = SimpleNamespace(
-        inspect_boundary_coverage=AsyncMock(return_value=(True, True, True)),
-        robot_has_station=AsyncMock(return_value=False),
-        create=AsyncMock(side_effect=create),
+        inspect_boundary_coverage=AsyncMock(return_value=[(True, True, True)]),
+        robots_with_other_map_stations=AsyncMock(return_value=set()),
+        save_many=AsyncMock(side_effect=save_many),
+        list_for_map=AsyncMock(return_value={}),
+        delete_many=AsyncMock(),
+        clear_assignments=AsyncMock(),
     )
 
     async def transaction(callback):
@@ -91,23 +98,25 @@ def setup_service(role=GroupRole.ADMIN):
 
 
 async def call(service, credential, map_id, **payload):
-    return await service.create_docking_station(
-        map_id=map_id,
-        station_create=DockingStationCreateDTO(geometry=polygon(), **payload),
+    return await service.save_docking_stations(
+        station_save=DockingStationsSaveDTO(
+            map_id=map_id,
+            data=[DockingStationSaveItemDTO(geometry=polygon(), **payload)],
+        ),
         group_id=credential.active_group_id,
         credential=credential,
         ctx=AppContext(
-            trace_id=uuid4(), actor=credential.id, action=CREATE_DOCKING_STATION
+            trace_id=uuid4(), actor=credential.id, action=SAVE_DOCKING_STATIONS
         ),
     )
 
 
 @pytest.mark.parametrize("heading", [None, *DockingStationHeading])
 def test_heading_normalization(heading):
-    dto = DockingStationCreateDTO(geometry=polygon(), heading=heading)
+    dto = DockingStationSaveItemDTO(geometry=polygon(), heading=heading)
     assert dto.heading == (heading or DockingStationHeading.SOUTH)
     assert (
-        DockingStationCreateDTO(geometry=polygon()).heading
+        DockingStationSaveItemDTO(geometry=polygon()).heading
         == DockingStationHeading.SOUTH
     )
 
@@ -118,13 +127,13 @@ async def test_roles(role):
     service, credential, map_id, _, _, _, stations = setup_service(role)
     if role in (GroupRole.OWNER, GroupRole.ADMIN):
         result = await call(service, credential, map_id)
-        assert result.heading == DockingStationHeading.SOUTH
-        assert result.robot_id is None
+        assert result[0].heading == DockingStationHeading.SOUTH
+        assert result[0].robot_id is None
     else:
         with pytest.raises(BaseException) as error:
             await call(service, credential, map_id)
         assert error.value.status_code == 403
-        stations.create.assert_not_called()
+        stations.save_many.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -148,31 +157,31 @@ async def test_validation_prevents_insertion(failure, code):
     if failure == "map":
         maps.get_by_id_and_group_for_update.return_value = None
     if failure == "robot":
-        bots.get_by_id_and_group_for_update.return_value = None
+        bots.get_by_ids_and_group_for_update.return_value = []
     if failure == "robot_map":
-        bots.get_by_id_and_group_for_update.return_value.map_id = uuid4()
+        bots.get_by_ids_and_group_for_update.return_value[0].map_id = uuid4()
     if failure == "boundary":
-        stations.inspect_boundary_coverage.return_value = (False, True, False)
+        stations.inspect_boundary_coverage.return_value = [(False, True, False)]
     if failure == "topology":
-        stations.inspect_boundary_coverage.return_value = (True, False, False)
+        stations.inspect_boundary_coverage.return_value = [(True, False, False)]
     if failure == "coverage":
-        stations.inspect_boundary_coverage.return_value = (True, True, False)
+        stations.inspect_boundary_coverage.return_value = [(True, True, False)]
     if failure == "duplicate":
-        stations.robot_has_station.return_value = True
+        stations.robots_with_other_map_stations.return_value = {robot_id}
     with pytest.raises(BaseException) as error:
         await call(service, credential, map_id, robot_id=robot_id)
     assert error.value.status_code == code
-    stations.create.assert_not_called()
+    stations.save_many.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_only_robot_conflict_is_translated():
     service, credential, map_id, _, _, _, stations = setup_service()
-    stations.create.side_effect = DockingStationRobotConflict()
+    stations.save_many.side_effect = DockingStationRobotConflict()
     with pytest.raises(BaseException) as error:
         await call(service, credential, map_id)
     assert error.value.status_code == 409
-    stations.create.side_effect = RuntimeError("unrelated failure")
+    stations.save_many.side_effect = RuntimeError("unrelated failure")
     with pytest.raises(RuntimeError, match="unrelated failure"):
         await call(service, credential, map_id)
 
@@ -185,12 +194,14 @@ async def test_http_contract_and_openapi():
         MapRouter(MapHandler(SimpleNamespace(), SimpleNamespace(), service)).router,
         prefix="/api/v1/maps",
     )
-    path = f"/api/v1/maps/{map_id}/stations"
+    path = "/api/v1/maps/stations"
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         assert (
-            await client.post(path, json={"geometry": polygon()})
+            await client.post(
+                path, json={"map_id": str(map_id), "data": [{"geometry": polygon()}]}
+            )
         ).status_code == 401
         app.dependency_overrides[AuthMiddleware.auth_middleware] = lambda: credential
         for extra in (
@@ -201,12 +212,18 @@ async def test_http_contract_and_openapi():
                 for h in DockingStationHeading
             ),
         ):
-            response = await client.post(path, json={"geometry": polygon(), **extra})
-            assert response.status_code == 201
+            response = await client.post(
+                path,
+                json={
+                    "map_id": str(map_id),
+                    "data": [{"geometry": polygon(), **extra}],
+                },
+            )
+            assert response.status_code == 200
             body = response.json()
-            assert body["message"] == "Docking station created"
-            assert body["statusCode"] == 201
-            assert set(body["data"]) == {
+            assert body["message"] == "Docking stations saved"
+            assert body["statusCode"] == 200
+            assert set(body["data"][0]) == {
                 "id",
                 "map_id",
                 "robot_id",
@@ -215,9 +232,9 @@ async def test_http_contract_and_openapi():
                 "created_at",
                 "updated_at",
             }
-            assert body["data"]["heading"] == (extra.get("heading") or "SOUTH")
-            assert body["data"]["robot_id"] == extra.get("robot_id")
-            assert body["data"]["geometry"] == polygon()
+            assert body["data"][0]["heading"] == (extra.get("heading") or "SOUTH")
+            assert body["data"][0]["robot_id"] == extra.get("robot_id")
+            assert body["data"][0]["geometry"] == polygon()
         for payload in (
             {},
             {"geometry": None},
@@ -232,15 +249,55 @@ async def test_http_contract_and_openapi():
                 }
             },
         ):
-            assert (await client.post(path, json=payload)).status_code == 422
+            assert (
+                await client.post(path, json={"map_id": str(map_id), "data": [payload]})
+            ).status_code == 422
         assert (
-            await client.post("/api/v1/maps/bad/stations", json={"geometry": polygon()})
-        ).status_code == 422
-    operation = app.openapi()["paths"]["/api/v1/maps/{map_id}/stations"]["post"]
-    assert {"201", "400", "401", "403", "404", "409", "422"} <= operation[
+            await client.post(
+                "/api/v1/maps/bad/stations",
+                json={"map_id": str(map_id), "data": [{"geometry": polygon()}]},
+            )
+        ).status_code == 404
+        cleared = await client.post(path, json={"map_id": str(map_id), "data": []})
+        assert cleared.status_code == 200 and cleared.json()["data"] == []
+    assert "/api/v1/maps/{map_id}/stations" not in app.openapi()["paths"]
+    batch_schema = app.openapi()["components"]["schemas"]["DockingStationsSaveDTO"]
+    assert set(batch_schema["required"]) == {"map_id", "data"}
+    assert batch_schema["properties"]["data"]["maxItems"] == 100
+    operation = app.openapi()["paths"]["/api/v1/maps/stations"]["post"]
+    assert {"200", "400", "401", "403", "404", "409", "422"} <= operation[
         "responses"
     ].keys()
-    schema = app.openapi()["components"]["schemas"]["DockingStationCreateDTO"]
+    schema = app.openapi()["components"]["schemas"]["DockingStationSaveItemDTO"]
     assert schema["required"] == ["geometry"]
     assert schema["additionalProperties"] is False
     assert schema["properties"]["heading"]["default"] == "SOUTH"
+
+
+@pytest.mark.parametrize("field", ["id", "robot_id"])
+def test_batch_duplicate_identifiers(field):
+    item = {"geometry": polygon(), field: uuid4()}
+    with pytest.raises(ValidationError):
+        DockingStationsSaveDTO(map_id=uuid4(), data=[item, item])
+
+
+def test_batch_limits_and_required_fields():
+    assert DockingStationsSaveDTO(map_id=uuid4(), data=[]).data == []
+    assert (
+        len(
+            DockingStationsSaveDTO(
+                map_id=uuid4(), data=[{"geometry": polygon()}] * 100
+            ).data
+        )
+        == 100
+    )
+    for payload in (
+        {"map_id": uuid4()},
+        {"data": []},
+        {"map_id": "bad", "data": []},
+        {"map_id": uuid4(), "data": None},
+        {"map_id": uuid4(), "data": [], "extra": True},
+        {"map_id": uuid4(), "data": [{"geometry": polygon()}] * 101},
+    ):
+        with pytest.raises(ValidationError):
+            DockingStationsSaveDTO(**payload)
