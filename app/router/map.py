@@ -16,16 +16,17 @@ class MapRouter:
         self.router = APIRouter(prefix="", tags=["Maps"])
         self.handler = handler
         self.router.add_api_route(
-            path="/{map_id}/stations",
-            endpoint=self.handler.create_docking_station,
+            path="/stations",
+            endpoint=self.handler.save_docking_stations,
             methods=["POST"],
-            response_model=BaseResponse[DockingStationInfo],
-            status_code=status.HTTP_201_CREATED,
-            summary="Create a docking station",
+            response_model=BaseResponse[list[DockingStationInfo]],
+            status_code=status.HTTP_200_OK,
+            summary="Save docking stations",
             description=(
-                "Owners and Admins may create a station within an active-group map's boundary. "
-                "Omitted or null heading defaults to SOUTH. An optional robot must belong "
-                "to this map and have no existing station. Polygon overlaps are allowed."
+                "Owners and Admins may atomically synchronize up to 100 stations for an active-group map. "
+                "Omitted stations are deleted; an empty data list clears the map. IDs update existing stations, "
+                "and items without IDs create stations. Null or omitted heading defaults to SOUTH. "
+                "Robots must belong to this map and be unique in the final list. Overlaps are allowed."
             ),
             responses={
                 400: {
@@ -34,7 +35,9 @@ class MapRouter:
                 401: {"description": "Authentication required"},
                 403: {"description": "Active-group Owner or Admin permission required"},
                 404: {"description": "Map or robot not found in the active group"},
-                409: {"description": "Robot already has a docking station"},
+                409: {
+                    "description": "Station changed or deleted, or robot assigned on another map"
+                },
                 422: {
                     "description": "Invalid identifiers, request fields, or geometry structure"
                 },
