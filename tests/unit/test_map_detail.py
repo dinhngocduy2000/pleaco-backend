@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from app.common.context import AppContext
 from app.common.enum.context_actions import LIST_MAPS
+from app.common.enum.docking_station import DockingStationHeading
 from app.common.enum.environment_zone import EnvironmentZoneType
 from app.common.enum.map import MapStatus
 from app.common.enum.robot import (
@@ -108,6 +109,14 @@ def _detail(map_id: UUID) -> dict:
                 "geometry": boundary,
             }
         ],
+        "docking_stations": [
+            {
+                "id": uuid4(),
+                "robot_id": None,
+                "geometry": boundary,
+                "heading": DockingStationHeading.NORTH,
+            }
+        ],
     }
 
 
@@ -147,6 +156,15 @@ async def test_every_group_role_can_get_active_group_map_detail(role: GroupRole)
         "connection_status",
         "operational_status",
     }
+    assert set(serialized["docking_stations"][0]) == {
+        "id",
+        "robot_id",
+        "geometry",
+        "heading",
+    }
+    assert serialized["docking_stations"][0]["robot_id"] is None
+    assert serialized["docking_stations"][0]["geometry"] == serialized["boundary"]
+    assert serialized["docking_stations"][0]["heading"] == "NORTH"
 
 
 @pytest.mark.asyncio
@@ -191,7 +209,7 @@ async def test_map_detail_returns_not_found_for_missing_or_cross_group_map() -> 
 async def test_map_detail_allows_absent_related_records() -> None:
     map_id, group_id = uuid4(), uuid4()
     detail = _detail(map_id)
-    detail.update(boundary=None, tags=[], robots=[], zones=[])
+    detail.update(boundary=None, tags=[], robots=[], zones=[], docking_stations=[])
     service, _ = _service(GroupRole.GUEST, detail)
 
     result = await service.get_map_detail(
@@ -204,6 +222,7 @@ async def test_map_detail_allows_absent_related_records() -> None:
     assert result.tags == []
     assert result.robots == []
     assert result.zones == []
+    assert result.docking_stations == []
 
 
 class ResultStub:
@@ -255,6 +274,12 @@ async def test_detail_repository_scopes_and_decodes_ordered_related_data() -> No
                 "operational_status": RobotOperationalStatus.CHARGING,
             }],
             [{"id": uuid4(), "type": EnvironmentZoneType.OBSTACLE, "geometry": json.dumps(geometry)}],
+            [{
+                "id": uuid4(),
+                "robot_id": None,
+                "geometry": json.dumps(geometry),
+                "heading": DockingStationHeading.WEST,
+            }],
         ]
     )
 
@@ -264,6 +289,7 @@ async def test_detail_repository_scopes_and_decodes_ordered_related_data() -> No
 
     assert detail["boundary"] == geometry
     assert detail["zones"][0]["geometry"] == geometry
+    assert detail["docking_stations"][0]["geometry"] == geometry
     statements = [str(statement) for statement in session.statements]
     assert "maps.id" in statements[0] and "maps.group_id" in statements[0]
     assert "LEFT OUTER JOIN map_boundaries" in statements[0]
@@ -271,6 +297,8 @@ async def test_detail_repository_scopes_and_decodes_ordered_related_data() -> No
     assert "ORDER BY tags.name ASC, tags.id ASC" in statements[1]
     assert "ORDER BY robots.name ASC, robots.id ASC" in statements[2]
     assert "ORDER BY environment_zones.created_at ASC, environment_zones.id ASC" in statements[3]
+    assert "docking_station.map_id" in statements[4]
+    assert "ORDER BY docking_station.created_at ASC, docking_station.id ASC" in statements[4]
 
 
 def test_router_declares_map_detail_contract_and_openapi_path() -> None:
@@ -288,3 +316,15 @@ def test_router_declares_map_detail_contract_and_openapi_path() -> None:
     operation = app.openapi()["paths"]["/api/v1/maps/{map_id}"]["get"]
     assert operation["parameters"][0]["schema"]["format"] == "uuid"
     assert "200" in operation["responses"]
+    schemas = app.openapi()["components"]["schemas"]
+    detail_schema = schemas["MapDetailInfo"]
+    stations_schema = detail_schema["properties"]["docking_stations"]
+    assert stations_schema["type"] == "array"
+    assert stations_schema["items"]["$ref"].endswith("/MapDetailDockingStationInfo")
+    station_schema = schemas["MapDetailDockingStationInfo"]
+    assert set(station_schema["properties"]) == {
+        "id",
+        "robot_id",
+        "geometry",
+        "heading",
+    }

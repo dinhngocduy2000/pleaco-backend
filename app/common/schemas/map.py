@@ -213,6 +213,13 @@ class MapDetailZoneInfo(BaseModel):
     geometry: PolygonGeometry
 
 
+class MapDetailDockingStationInfo(BaseModel):
+    id: UUID
+    robot_id: UUID | None
+    geometry: PolygonGeometry
+    heading: DockingStationHeading
+
+
 class MapDetailInfo(BaseModel):
     id: UUID
     name: str
@@ -228,3 +235,4 @@ class MapDetailInfo(BaseModel):
         None, description="Boundary polygon in local map coordinates, or null if unset"
     )
     zones: list[MapDetailZoneInfo] = Field(default_factory=list)
+    docking_stations: list[MapDetailDockingStationInfo] = Field(default_factory=list)
