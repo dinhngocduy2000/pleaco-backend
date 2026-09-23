@@ -101,7 +101,7 @@ class MapRouter:
             summary="Get active-group map detail",
             description=(
                 "Return an active-group map's metadata, compact tags, assigned robots, "
-                "boundary, and environment zones."
+                "boundary, environment zones, and docking stations."
             ),
             responses={
                 401: {"description": "Authentication required"},

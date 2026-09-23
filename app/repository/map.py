@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.map import MapStatus
 from app.common.schemas.map import MapListQuery
+from app.models.docking_station import DockingStation
+from app.models.environment_zone import EnvironmentZone
 from app.models.map import Map
 from app.models.map_boundary import MapBoundary
 from app.models.map_tags import map_tags
-from app.models.environment_zone import EnvironmentZone
 from app.models.robot import Robot
 from app.models.tag import Tag
 
@@ -86,6 +87,16 @@ class MapRepository:
             .where(EnvironmentZone.map_id == map_id)
             .order_by(EnvironmentZone.created_at.asc(), EnvironmentZone.id.asc())
         )
+        docking_stations_result = await session.execute(
+            select(
+                DockingStation.id,
+                DockingStation.robot_id,
+                func.ST_AsGeoJSON(DockingStation.geometry, 17, 0).label("geometry"),
+                DockingStation.heading,
+            )
+            .where(DockingStation.map_id == map_id)
+            .order_by(DockingStation.created_at.asc(), DockingStation.id.asc())
+        )
 
         detail = dict(map_row)
         detail["boundary"] = (
@@ -98,6 +109,11 @@ class MapRepository:
             zone = dict(row)
             zone["geometry"] = json.loads(zone["geometry"])
             detail["zones"].append(zone)
+        detail["docking_stations"] = []
+        for row in docking_stations_result.mappings().all():
+            station = dict(row)
+            station["geometry"] = json.loads(station["geometry"])
+            detail["docking_stations"].append(station)
         return detail
 
     async def get_by_id_and_group_for_update(
