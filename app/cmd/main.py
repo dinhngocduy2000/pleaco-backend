@@ -103,7 +103,10 @@ class App:
                 add_group_member_topic=add_group_member_topic,
             )
             bot_service = BotService(
-                repo=registry,
+                bot_repository=registry.bot_repo(),
+                tag_repository=registry.tag_repo(),
+                robot_tags_repository=registry.robot_tags_repo(),
+                transactions=registry,
                 permission_service=permission_service,
             )
             tag_service = TagService(

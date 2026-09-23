@@ -62,7 +62,9 @@ class PermissionServiceStub:
         self.role = role
 
     async def get_group_member(self, credential, ctx, group_id=None):
-        if self.role is None or credential.active_group_id is None:
+        if group_id is None and credential.active_group_id is None:
+            raise ForbiddenException(message="A group must be selected")
+        if self.role is None:
             return None
         now = datetime.now(timezone.utc)
         return GroupMemberInfo(
@@ -99,11 +101,16 @@ class BotRepositoryStub:
 
 def _service(role: GroupRole | None, bots: list[Robot]):
     bot_repository = BotRepositoryStub(bots)
-    registry = SimpleNamespace(
-        bot_repo=lambda: bot_repository,
+    transactions = SimpleNamespace(
         transaction_wrapper=lambda callback: callback(SimpleNamespace()),
     )
-    return BotService(registry, PermissionServiceStub(role)), bot_repository
+    return BotService(
+        bot_repository=bot_repository,
+        tag_repository=SimpleNamespace(),
+        robot_tags_repository=SimpleNamespace(),
+        transactions=transactions,
+        permission_service=PermissionServiceStub(role),
+    ), bot_repository
 
 
 @pytest.mark.asyncio
@@ -119,7 +126,10 @@ async def test_privileged_roles_hard_delete_bot_in_active_group(
     credential = _credential(group_id)
 
     await service.delete_bot(
-        bot_id=bot.id, credential=credential, ctx=_ctx(credential.id)
+        bot_id=bot.id,
+        credential=credential,
+        group_id=group_id,
+        ctx=_ctx(credential.id),
     )
 
     assert repository.locked_lookup == (bot.id, group_id)
@@ -137,7 +147,10 @@ async def test_unprivileged_or_non_member_callers_cannot_delete_bot(role) -> Non
 
     with pytest.raises(ForbiddenException):
         await service.delete_bot(
-            bot_id=bot.id, credential=credential, ctx=_ctx(credential.id)
+            bot_id=bot.id,
+            credential=credential,
+            group_id=group_id,
+            ctx=_ctx(credential.id),
         )
 
     assert repository.bots == {(bot.id, group_id): bot}
@@ -152,7 +165,10 @@ async def test_callers_without_an_active_group_cannot_delete_bot() -> None:
 
     with pytest.raises(ForbiddenException, match="group must be selected"):
         await service.delete_bot(
-            bot_id=bot.id, credential=credential, ctx=_ctx(credential.id)
+            bot_id=bot.id,
+            credential=credential,
+            group_id=None,
+            ctx=_ctx(credential.id),
         )
 
     assert repository.bots == {(bot.id, group_id): bot}
@@ -170,11 +186,15 @@ async def test_unknown_or_out_of_group_bot_returns_not_found() -> None:
         await service.delete_bot(
             bot_id=other_group_bot.id,
             credential=credential,
+            group_id=active_group_id,
             ctx=_ctx(credential.id),
         )
     with pytest.raises(NotFoundException, match="Bot not found"):
         await service.delete_bot(
-            bot_id=uuid4(), credential=credential, ctx=_ctx(credential.id)
+            bot_id=uuid4(),
+            credential=credential,
+            group_id=active_group_id,
+            ctx=_ctx(credential.id),
         )
 
     assert repository.deleted is None
@@ -190,7 +210,10 @@ async def test_executing_bot_cannot_be_deleted() -> None:
 
     with pytest.raises(BadRequestException, match="stop the operation or wait"):
         await service.delete_bot(
-            bot_id=bot.id, credential=credential, ctx=_ctx(credential.id)
+            bot_id=bot.id,
+            credential=credential,
+            group_id=group_id,
+            ctx=_ctx(credential.id),
         )
 
     assert repository.deleted is None
@@ -239,6 +262,7 @@ async def test_repository_scopes_locked_lookup_and_hard_delete_to_group() -> Non
 def test_router_registers_delete_bot_contract() -> None:
     class HandlerStub:
         async def list_bots(self): ...
+        async def list_bot_key_value(self): ...
         async def create_bot(self): ...
         async def delete_bot(self): ...
 

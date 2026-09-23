@@ -42,12 +42,14 @@ class PermissionServiceStub:
         self.role = role
 
     async def get_group_member(self, credential, ctx, group_id=None):
+        if group_id is None and credential.active_group_id is None:
+            raise ForbiddenException(message="A group must be selected")
         if self.role is None:
             return None
         now = datetime.now(timezone.utc)
         return GroupMemberInfo(
             member_id=credential.id,
-            group_id=group_id,
+            group_id=group_id or credential.active_group_id,
             role=self.role,
             created_at=now,
             updated_at=now,
@@ -107,9 +109,10 @@ def _service(role: GroupRole | None) -> tuple[BotService, BotRepositoryStub]:
     bot_repository = BotRepositoryStub()
     robot_tags_repository = RobotTagsRepositoryStub()
     return BotService(
-        repo=SimpleNamespace(
-            bot_repo=lambda: bot_repository,
-            robot_tags_repo=lambda: robot_tags_repository,
+        bot_repository=bot_repository,
+        tag_repository=SimpleNamespace(),
+        robot_tags_repository=robot_tags_repository,
+        transactions=SimpleNamespace(
             transaction_wrapper=lambda callback: callback(SimpleNamespace()),
         ),
         permission_service=PermissionServiceStub(role),

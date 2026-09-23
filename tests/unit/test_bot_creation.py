@@ -125,12 +125,16 @@ def _request(
 def _service(role: GroupRole | None, tags: list[Tag]) -> tuple[BotService, BotRepositoryStub]:
     bot_repository = BotRepositoryStub()
     tag_repository = TagRepositoryStub(tags)
-    registry = SimpleNamespace(
-        bot_repo=lambda: bot_repository,
-        tag_repo=lambda: tag_repository,
+    transactions = SimpleNamespace(
         transaction_wrapper=lambda callback: callback(SimpleNamespace()),
     )
-    return BotService(registry, PermissionServiceStub(role)), bot_repository
+    return BotService(
+        bot_repository=bot_repository,
+        tag_repository=tag_repository,
+        robot_tags_repository=SimpleNamespace(),
+        transactions=transactions,
+        permission_service=PermissionServiceStub(role),
+    ), bot_repository
 
 
 def _ctx() -> AppContext:
