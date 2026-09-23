@@ -74,6 +74,8 @@ def setup_service(role=GroupRole.ADMIN, exists=True):
         find_existing_overlap=AsyncMock(return_value=None),
         get_existing_ids=AsyncMock(return_value=set()),
         delete_many=AsyncMock(),
+        delete_all_for_map=AsyncMock(),
+        has_outside_boundary=AsyncMock(return_value=False),
         update_many=AsyncMock(),
         create_many=AsyncMock(),
     )
@@ -204,6 +206,22 @@ def test_request_defaults_new_zone_identity_and_delete_flag():
     request = EnvironmentZonesSaveDTO.model_validate(payload())
     assert request.zones[0].id is None
     assert request.zones[0].to_delete is False
+
+
+@pytest.mark.asyncio
+async def test_layout_empty_zone_list_clears_all_zones():
+    service, _, map_record, _, zones = setup_service()
+
+    await service.save_environment_zones_in_transaction(
+        session=SimpleNamespace(),
+        map_id=map_record.id,
+        zones=[],
+        ctx=AppContext(trace_id=uuid4(), action=CREATE_ENVIRONMENT_ZONES),
+    )
+
+    zones.delete_all_for_map.assert_awaited_once()
+    zones.get_existing_ids.assert_not_awaited()
+    zones.create_many.assert_not_awaited()
 
 
 @pytest.mark.asyncio

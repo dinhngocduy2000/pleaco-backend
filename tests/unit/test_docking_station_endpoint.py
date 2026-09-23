@@ -68,6 +68,7 @@ def setup_service(role=GroupRole.ADMIN):
         save_many=AsyncMock(side_effect=save_many),
         list_for_map=AsyncMock(return_value={}),
         delete_many=AsyncMock(),
+        has_outside_boundary=AsyncMock(return_value=False),
         clear_assignments=AsyncMock(),
     )
 
