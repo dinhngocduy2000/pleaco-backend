@@ -5,7 +5,6 @@ from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
 
 from app.common.context import AppContext
 from app.common.enum.context_actions import SAVE_DOCKING_STATIONS
@@ -13,7 +12,6 @@ from app.common.enum.docking_station import DockingStationHeading
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import BaseException
-from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.map import DockingStationSaveItemDTO, DockingStationsSaveDTO
 from pydantic import ValidationError
 from app.common.schemas.user import Credential
@@ -187,92 +185,14 @@ async def test_only_robot_conflict_is_translated():
         await call(service, credential, map_id)
 
 
-@pytest.mark.asyncio
-async def test_http_contract_and_openapi():
-    service, credential, map_id, robot_id, _, _, _ = setup_service()
+def test_legacy_docking_station_endpoint_is_removed():
     app = FastAPI()
     app.include_router(
-        MapRouter(MapHandler(SimpleNamespace(), SimpleNamespace(), service)).router,
+        MapRouter(MapHandler(SimpleNamespace())).router,
         prefix="/api/v1/maps",
     )
     path = "/api/v1/maps/stations"
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        assert (
-            await client.post(
-                path, json={"map_id": str(map_id), "data": [{"geometry": polygon()}]}
-            )
-        ).status_code == 401
-        app.dependency_overrides[AuthMiddleware.auth_middleware] = lambda: credential
-        for extra in (
-            {},
-            {"heading": None},
-            *(
-                {"heading": h.value, "robot_id": str(robot_id)}
-                for h in DockingStationHeading
-            ),
-        ):
-            response = await client.post(
-                path,
-                json={
-                    "map_id": str(map_id),
-                    "data": [{"geometry": polygon(), **extra}],
-                },
-            )
-            assert response.status_code == 200
-            body = response.json()
-            assert body["message"] == "Docking stations saved"
-            assert body["statusCode"] == 200
-            assert set(body["data"][0]) == {
-                "id",
-                "map_id",
-                "robot_id",
-                "geometry",
-                "heading",
-                "created_at",
-                "updated_at",
-            }
-            assert body["data"][0]["heading"] == (extra.get("heading") or "SOUTH")
-            assert body["data"][0]["robot_id"] == extra.get("robot_id")
-            assert body["data"][0]["geometry"] == polygon()
-        for payload in (
-            {},
-            {"geometry": None},
-            {"geometry": polygon(), "heading": "NORTHEAST"},
-            {"geometry": polygon(), "robot_id": "bad"},
-            {"geometry": polygon(), "map_id": str(map_id)},
-            {"geometry": {"type": "Point", "coordinates": [0, 0]}},
-            {
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1]]],
-                }
-            },
-        ):
-            assert (
-                await client.post(path, json={"map_id": str(map_id), "data": [payload]})
-            ).status_code == 422
-        assert (
-            await client.post(
-                "/api/v1/maps/bad/stations",
-                json={"map_id": str(map_id), "data": [{"geometry": polygon()}]},
-            )
-        ).status_code == 404
-        cleared = await client.post(path, json={"map_id": str(map_id), "data": []})
-        assert cleared.status_code == 200 and cleared.json()["data"] == []
-    assert "/api/v1/maps/{map_id}/stations" not in app.openapi()["paths"]
-    batch_schema = app.openapi()["components"]["schemas"]["DockingStationsSaveDTO"]
-    assert set(batch_schema["required"]) == {"map_id", "data"}
-    assert batch_schema["properties"]["data"]["maxItems"] == 100
-    operation = app.openapi()["paths"]["/api/v1/maps/stations"]["post"]
-    assert {"200", "400", "401", "403", "404", "409", "422"} <= operation[
-        "responses"
-    ].keys()
-    schema = app.openapi()["components"]["schemas"]["DockingStationSaveItemDTO"]
-    assert schema["required"] == ["geometry"]
-    assert schema["additionalProperties"] is False
-    assert schema["properties"]["heading"]["default"] == "SOUTH"
+    assert path not in app.openapi()["paths"]
 
 
 @pytest.mark.parametrize("field", ["id", "robot_id"])

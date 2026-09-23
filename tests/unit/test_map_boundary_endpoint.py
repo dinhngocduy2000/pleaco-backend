@@ -7,7 +7,6 @@ from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from app.common.context import AppContext
@@ -16,7 +15,6 @@ from app.common.enum.map import MapBoundarySource
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import BadRequestException, ForbiddenException, NotFoundException
-from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.map import MapBoundarySaveDTO
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
@@ -188,32 +186,12 @@ async def test_invalid_spatial_result_never_writes(checks):
     boundaries.upsert.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_http_contract_authentication_and_openapi():
-    service, credential, record, maps, boundaries = setup_service()
+def test_legacy_boundary_endpoint_is_removed():
+    service, _, _, _, _ = setup_service()
     app = FastAPI()
     app.include_router(
-        MapRouter(MapHandler(service, SimpleNamespace(), SimpleNamespace())).router,
+        MapRouter(MapHandler(service)).router,
         prefix="/api/v1/maps",
     )
     path = "/api/v1/maps/boundary"
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(path, json={"map_id": str(record.id)})
-        assert response.status_code == 401
-        app.dependency_overrides[AuthMiddleware.auth_middleware] = lambda: credential
-        response = await client.post(path, json={"map_id": str(record.id)})
-        assert response.status_code == 200
-        assert response.json()["message"] == "Map boundary saved"
-        assert response.json()["statusCode"] == 200
-        assert response.json()["data"]["geometry"]["type"] == "Polygon"
-        for payload in [{"map_id": "bad"}, {"map_id": str(record.id), "source": "bad"},
-                        {"map_id": str(record.id), "geometry": {**POLYGON, "type": "Point"}}]:
-            assert (await client.post(path, json=payload)).status_code == 422
-        maps.get_by_id_and_group_for_update.return_value = None
-        response = await client.post(path, json={"map_id": str(uuid4())})
-        assert response.status_code == 404 and response.json()["detail"] == "Map not found"
-        boundaries.upsert.assert_awaited_once()
-    schema = app.openapi()
-    assert "200" in schema["paths"][path]["post"]["responses"]
-    assert schema["components"]["schemas"]["PolygonGeometry"]["properties"]["type"]["const"] == "Polygon"
-    assert schema["components"]["schemas"]["MapBoundarySaveDTO"]["properties"]["source"]["default"] == "DIMENSIONS"
+    assert path not in app.openapi()["paths"]

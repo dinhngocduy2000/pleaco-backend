@@ -2,8 +2,6 @@ from fastapi import APIRouter, status
 
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.common.schemas.map import (
-    DockingStationInfo,
-    MapBoundaryInfo,
     MapDetailInfo,
     MapInfo,
     MapListInfo,
@@ -44,83 +42,6 @@ class MapRouter:
                         "conflict"
                     )
                 },
-                422: {"description": "Invalid request fields or geometry structure"},
-            },
-        )
-        self.router.add_api_route(
-            path="/stations",
-            endpoint=self.handler.save_docking_stations,
-            methods=["POST"],
-            response_model=BaseResponse[list[DockingStationInfo]],
-            status_code=status.HTTP_200_OK,
-            summary="Save docking stations",
-            description=(
-                "Owners and Admins may atomically synchronize up to 100 stations for an active-group map. "
-                "Omitted stations are deleted; an empty data list clears the map. IDs update existing stations, "
-                "and items without IDs create stations. Null or omitted heading defaults to SOUTH. "
-                "Robots must belong to this map and be unique in the final list. Overlaps are allowed."
-            ),
-            responses={
-                400: {
-                    "description": "Missing boundary, invalid topology or containment, or robot assigned to another map"
-                },
-                401: {"description": "Authentication required"},
-                403: {"description": "Active-group Owner or Admin permission required"},
-                404: {"description": "Map or robot not found in the active group"},
-                409: {
-                    "description": "Station changed or deleted, or robot assigned on another map"
-                },
-                422: {
-                    "description": "Invalid identifiers, request fields, or geometry structure"
-                },
-            },
-        )
-        self.router.add_api_route(
-            path="/zones",
-            endpoint=self.handler.save_environment_zones,
-            methods=["POST"],
-            status_code=status.HTTP_204_NO_CONTENT,
-            summary="Adjust environment zones",
-            description=(
-                "Owners and Admins may atomically create, edit, and delete "
-                "non-overlapping zones fully contained by an active-group map's "
-                "current boundary."
-            ),
-            responses={
-                400: {
-                    "description": (
-                        "Missing boundary, invalid polygon, containment failure, "
-                        "or zone overlap"
-                    )
-                },
-                409: {
-                    "description": "An edited zone was changed or deleted; refresh the map"
-                },
-                401: {"description": "Authentication required"},
-                403: {"description": "Active-group Owner or Admin permission required"},
-                404: {"description": "Map not found in the active group"},
-                422: {"description": "Invalid request fields or geometry structure"},
-            },
-        )
-        self.router.add_api_route(
-            path="/boundary",
-            endpoint=self.handler.save_boundary,
-            methods=["POST"],
-            response_model=BaseResponse[MapBoundaryInfo],
-            status_code=status.HTTP_200_OK,
-            summary="Create or replace a map boundary",
-            description=(
-                "Owners and Admins may save boundaries for active-group maps. "
-                "DIMENSIONS generates a rectangle; CUSTOM and TEACH_MODE require "
-                "a valid local X/Y polygon within the map dimensions."
-            ),
-            responses={
-                400: {
-                    "description": "Invalid dimensions, polygon topology, or containment"
-                },
-                401: {"description": "Authentication required"},
-                403: {"description": "Active-group Owner or Admin permission required"},
-                404: {"description": "Map not found in the active group"},
                 422: {"description": "Invalid request fields or geometry structure"},
             },
         )

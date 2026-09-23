@@ -152,11 +152,7 @@ class App:
             )
             bot_handler = BotHandler(service=bot_service)
             tag_handler = TagHandler(service=tag_service)
-            map_handler = MapHandler(
-                service=map_service,
-                environment_zones_service=environment_zones_service,
-                docking_station_service=docking_station_service,
-            )
+            map_handler = MapHandler(service=map_service)
 
             # ------------ Router ------------
             user_router = UserRouter(handler=user_handler)

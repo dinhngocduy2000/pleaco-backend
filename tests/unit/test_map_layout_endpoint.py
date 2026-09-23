@@ -286,7 +286,7 @@ async def test_http_contract_and_openapi():
     db = setup_service()
     app = FastAPI()
     app.include_router(
-        MapRouter(MapHandler(db.service, db.zones, db.docking)).router,
+        MapRouter(MapHandler(db.service)).router,
         prefix="/api/v1/maps",
     )
     path = "/api/v1/maps/layouts"

@@ -383,9 +383,6 @@ def test_router_declares_create_map_route() -> None:
         create_map=lambda: None,
         list_maps=lambda: None,
         save_layout=lambda: None,
-        save_boundary=lambda: None,
-        save_environment_zones=lambda: None,
-        save_docking_stations=lambda: None,
         get_map_detail=lambda: None,
     )
     router = MapRouter(handler).router

@@ -302,7 +302,7 @@ async def test_detail_repository_scopes_and_decodes_ordered_related_data() -> No
 
 
 def test_router_declares_map_detail_contract_and_openapi_path() -> None:
-    router = MapRouter(MapHandler(SimpleNamespace(), SimpleNamespace(), SimpleNamespace())).router
+    router = MapRouter(MapHandler(SimpleNamespace())).router
     route = next(
         route
         for route in router.routes

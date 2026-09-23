@@ -5,7 +5,6 @@ from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
@@ -19,7 +18,6 @@ from app.common.exceptions import (
     ForbiddenException,
     NotFoundException,
 )
-from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.map import EnvironmentZonesSaveDTO
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
@@ -555,36 +553,11 @@ async def test_repository_scopes_lookup_update_delete_and_overlap_exclusions():
     assert "environment_zones.map_id" in sql[3]
 
 
-@pytest.mark.asyncio
-async def test_http_contract_authentication_validation_and_openapi():
-    service, credential, map_record, _, _ = setup_service()
+def test_legacy_environment_zone_endpoint_is_removed():
     app = FastAPI()
     app.include_router(
-        MapRouter(MapHandler(SimpleNamespace(), service, SimpleNamespace())).router,
+        MapRouter(MapHandler(SimpleNamespace())).router,
         prefix="/api/v1/maps",
     )
     path = "/api/v1/maps/zones"
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(path, json=payload(map_record.id))
-        assert response.status_code == 401
-
-        app.dependency_overrides[AuthMiddleware.auth_middleware] = lambda: credential
-        response = await client.post(path, json=payload(map_record.id))
-        assert response.status_code == 204
-        assert response.content == b""
-
-        for invalid_payload in [
-            {"map_id": str(map_record.id), "zones": []},
-            {
-                "map_id": str(map_record.id),
-                "zones": [{"type": "UNKNOWN", "geometry": polygon()}],
-            },
-        ]:
-            assert (await client.post(path, json=invalid_payload)).status_code == 422
-
-    operation = app.openapi()["paths"][path]["post"]
-    assert "204" in operation["responses"]
-    assert "content" not in operation["responses"]["204"]
+    assert path not in app.openapi()["paths"]
