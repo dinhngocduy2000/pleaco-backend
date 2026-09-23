@@ -9,6 +9,7 @@ from app.common.enum.context_actions import (
     CREATE_MAP,
     LIST_MAPS,
     SAVE_MAP_BOUNDARY,
+    SAVE_MAP_LAYOUT,
 )
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
@@ -22,6 +23,7 @@ from app.common.schemas.map import (
     MapDetailInfo,
     EnvironmentZonesSaveDTO,
     MapInfo,
+    MapLayoutSaveDTO,
     MapListInfo,
     MapListQuery,
 )
@@ -41,6 +43,20 @@ class MapHandler:
         self.docking_station_service = docking_station_service
         self.service = service
         self.environment_zones_service = environment_zones_service
+
+    @exception_handler
+    async def save_layout(
+        self,
+        layout_save: MapLayoutSaveDTO,
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> None:
+        ctx = AppContext(trace_id=uuid4(), action=SAVE_MAP_LAYOUT, actor=credential.id)
+        await self.service.save_layout(
+            layout_save=layout_save,
+            group_id=credential.active_group_id,
+            credential=credential,
+            ctx=ctx,
+        )
 
     @exception_handler
     async def save_docking_stations(

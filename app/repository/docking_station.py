@@ -122,6 +122,30 @@ class DockingStationRepository:
                 )
             )
 
+    async def has_outside_boundary(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        ctx: AppContext,
+    ) -> bool:
+        """Return whether any stored station is outside the current boundary."""
+        boundary = (
+            select(MapBoundary.geometry)
+            .where(MapBoundary.map_id == map_id)
+            .scalar_subquery()
+        )
+        statement = select(
+            exists(
+                select(1).where(
+                    DockingStation.map_id == map_id,
+                    func.coalesce(
+                        func.ST_Covers(boundary, DockingStation.geometry), False
+                    ).is_(False),
+                )
+            )
+        )
+        return bool(await session.scalar(statement))
+
     async def clear_assignments(
         self,
         session: AsyncSession,

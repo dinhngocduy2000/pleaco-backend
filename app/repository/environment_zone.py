@@ -251,6 +251,41 @@ class EnvironmentZoneRepository:
             )
         )
 
+    async def delete_all_for_map(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        ctx: AppContext,
+    ) -> None:
+        """Hard-delete every environment zone belonging to a map."""
+        await session.execute(
+            delete(EnvironmentZone).where(EnvironmentZone.map_id == map_id)
+        )
+
+    async def has_outside_boundary(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        ctx: AppContext,
+    ) -> bool:
+        """Return whether any stored zone is not covered by the current boundary."""
+        boundary = (
+            select(MapBoundary.geometry)
+            .where(MapBoundary.map_id == map_id)
+            .scalar_subquery()
+        )
+        statement = select(
+            exists(
+                select(1).where(
+                    EnvironmentZone.map_id == map_id,
+                    func.coalesce(
+                        func.ST_Covers(boundary, EnvironmentZone.geometry), False
+                    ).is_(False),
+                )
+            )
+        )
+        return bool(await session.scalar(statement))
+
     async def update_many(
         self,
         session: AsyncSession,

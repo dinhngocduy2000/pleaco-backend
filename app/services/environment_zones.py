@@ -162,98 +162,132 @@ class EnvironmentZonesService:
             if map_record is None:
                 raise NotFoundException(message="Map not found")
 
-            repository = self.repo.environment_zone_repo()
-
-            (
-                delete_items,
-                create_items,
-                edit_items,
-                submitted_ids,
-            ) = self._partition_zone_items(zones_create.zones)
-
-            existing_ids = await repository.get_existing_ids(
+            await self.save_environment_zones_in_transaction(
                 session=session,
                 map_id=map_record.id,
-                zone_ids=submitted_ids,
+                zones=zones_create.zones,
                 ctx=ctx,
-            )
-            missing_edit = next(
-                (index for index, zone in edit_items if zone.id not in existing_ids),
-                None,
-            )
-            if missing_edit is not None:
-                raise BadRequestException(
-                    message=(
-                        f"Zone at index {missing_edit} was changed or deleted; "
-                        "refresh the list and try again"
-                    ),
-                    status_code=status.HTTP_409_CONFLICT,
-                )
-
-            validation_items = [*create_items, *edit_items]
-            geometry_jsons = [
-                zone.geometry.model_dump_json() for _, zone in validation_items
-            ]
-            if validation_items:
-                await self._validate_boundary_coverage(
-                    repository=repository,
-                    session=session,
-                    map_id=map_record.id,
-                    geometry_jsons=geometry_jsons,
-                    validation_items=validation_items,
-                    ctx=ctx,
-                )
-
-                await self._validate_overlaps(
-                    repository=repository,
-                    session=session,
-                    map_id=map_record.id,
-                    geometry_jsons=geometry_jsons,
-                    validation_items=validation_items,
-                    excluded_zone_ids=submitted_ids,
-                    ctx=ctx,
-                )
-
-            delete_ids = [
-                zone.id
-                for _, zone in delete_items
-                if zone.id is not None and zone.id in existing_ids
-            ]
-            if delete_ids:
-                await repository.delete_many(
-                    session=session,
-                    map_id=map_record.id,
-                    zone_ids=delete_ids,
-                    ctx=ctx,
-                )
-            if edit_items:
-                await repository.update_many(
-                    session=session,
-                    map_id=map_record.id,
-                    zones=[
-                        (zone.id, zone.type, zone.geometry.model_dump_json())
-                        for _, zone in edit_items
-                        if zone.id is not None
-                    ],
-                    ctx=ctx,
-                )
-            if create_items:
-                await repository.create_many(
-                    session=session,
-                    map_id=map_record.id,
-                    zones=[
-                        (zone.type, zone.geometry.model_dump_json())
-                        for _, zone in create_items
-                    ],
-                    ctx=ctx,
-                )
-            logger.info(
-                msg=(
-                    f"Saved environment zones for map {map_record.id}: "
-                    f"created={len(create_items)}, updated={len(edit_items)}, "
-                    f"deleted={len(delete_ids)}"
-                ),
-                context=ctx,
             )
 
         await self.repo.transaction_wrapper(_save)
+        logger.info(
+            msg=f"Saved environment zones for map {zones_create.map_id}",
+            context=ctx,
+        )
+
+    async def save_environment_zones_in_transaction(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        zones: list[EnvironmentZoneSaveItemDTO],
+        ctx: AppContext,
+    ) -> None:
+        """Apply zone changes using a caller-owned transaction and map lock."""
+        repository = self.repo.environment_zone_repo()
+        if not zones:
+            await repository.delete_all_for_map(
+                session=session,
+                map_id=map_id,
+                ctx=ctx,
+            )
+            return
+
+        (
+            delete_items,
+            create_items,
+            edit_items,
+            submitted_ids,
+        ) = self._partition_zone_items(zones)
+
+        existing_ids = await repository.get_existing_ids(
+            session=session,
+            map_id=map_id,
+            zone_ids=submitted_ids,
+            ctx=ctx,
+        )
+        missing_edit = next(
+            (index for index, zone in edit_items if zone.id not in existing_ids),
+            None,
+        )
+        if missing_edit is not None:
+            raise BadRequestException(
+                message=(
+                    f"Zone at index {missing_edit} was changed or deleted; "
+                    "refresh the list and try again"
+                ),
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        validation_items = [*create_items, *edit_items]
+        geometry_jsons = [
+            zone.geometry.model_dump_json() for _, zone in validation_items
+        ]
+        if validation_items:
+            await self._validate_boundary_coverage(
+                repository=repository,
+                session=session,
+                map_id=map_id,
+                geometry_jsons=geometry_jsons,
+                validation_items=validation_items,
+                ctx=ctx,
+            )
+
+            await self._validate_overlaps(
+                repository=repository,
+                session=session,
+                map_id=map_id,
+                geometry_jsons=geometry_jsons,
+                validation_items=validation_items,
+                excluded_zone_ids=submitted_ids,
+                ctx=ctx,
+            )
+
+        delete_ids = [
+            zone.id
+            for _, zone in delete_items
+            if zone.id is not None and zone.id in existing_ids
+        ]
+        if delete_ids:
+            await repository.delete_many(
+                session=session,
+                map_id=map_id,
+                zone_ids=delete_ids,
+                ctx=ctx,
+            )
+        if edit_items:
+            await repository.update_many(
+                session=session,
+                map_id=map_id,
+                zones=[
+                    (zone.id, zone.type, zone.geometry.model_dump_json())
+                    for _, zone in edit_items
+                    if zone.id is not None
+                ],
+                ctx=ctx,
+            )
+        if create_items:
+            await repository.create_many(
+                session=session,
+                map_id=map_id,
+                zones=[
+                    (zone.type, zone.geometry.model_dump_json())
+                    for _, zone in create_items
+                ],
+                ctx=ctx,
+            )
+
+    async def validate_all_within_boundary(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        ctx: AppContext,
+    ) -> None:
+        """Reject a final layout containing a zone outside its boundary."""
+        if await self.repo.environment_zone_repo().has_outside_boundary(
+            session=session,
+            map_id=map_id,
+            ctx=ctx,
+        ):
+            raise BadRequestException(
+                message="All environment zones must be within the map boundary"
+            )

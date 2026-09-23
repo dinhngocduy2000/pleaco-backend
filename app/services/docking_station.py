@@ -44,7 +44,14 @@ class DockingStationService:
         self._validate_active_group(group_id, credential)
 
         async def save(session: AsyncSession) -> list[DockingStationInfo]:
-            return await self._save_snapshot(session, station_save, group_id, ctx)
+            await self._lock_map(session, station_save.map_id, group_id, ctx)
+            return await self.save_docking_stations_in_transaction(
+                session=session,
+                map_id=station_save.map_id,
+                stations=station_save.data,
+                group_id=group_id,
+                ctx=ctx,
+            )
 
         results = await self.repo.transaction_wrapper(save)
         logger.info(
@@ -58,17 +65,19 @@ class DockingStationService:
         if group_id is None or group_id != credential.active_group_id:
             raise ForbiddenException(message="An active group must be selected")
 
-    async def _save_snapshot(
+    async def save_docking_stations_in_transaction(
         self,
         session: AsyncSession,
-        request: DockingStationsSaveDTO,
+        map_id: UUID,
+        stations: list[DockingStationSaveItemDTO],
         group_id: UUID,
         ctx: AppContext,
     ) -> list[DockingStationInfo]:
-        await self._lock_map(session, request.map_id, group_id, ctx)
+        """Save a station snapshot using a caller-owned transaction and map lock."""
+        request = DockingStationsSaveDTO(map_id=map_id, data=stations)
         current = await self.repo.docking_station_repo().list_for_map(
             session=session,
-            map_id=request.map_id,
+            map_id=map_id,
             ctx=ctx,
         )
         creates, edits, deletes = self._partition_actions(request.data, current)
@@ -84,6 +93,22 @@ class DockingStationService:
             station
             for _, station in sorted([*updated, *created], key=lambda row: row[0])
         ]
+
+    async def validate_all_within_boundary(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        ctx: AppContext,
+    ) -> None:
+        """Reject a final layout containing a station outside its boundary."""
+        if await self.repo.docking_station_repo().has_outside_boundary(
+            session=session,
+            map_id=map_id,
+            ctx=ctx,
+        ):
+            raise BadRequestException(
+                message="All docking stations must be within the map boundary"
+            )
 
     async def _lock_map(
         self, session: AsyncSession, map_id: UUID, group_id: UUID, ctx: AppContext

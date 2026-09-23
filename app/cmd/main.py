@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import suppress
 from pathlib import Path
-from collections.abc import  Callable
+from collections.abc import Callable
 from app.core.rbac.permissions import PermissionService
 from app.external.queues.topics.base import init_topics
 from fastapi import FastAPI
@@ -57,8 +57,6 @@ from app.services.bot_status import BotStatusService
 class App:
     application: FastAPI
 
-
-
     def on_init_app(self) -> Callable:
         async def start_app() -> None:
             pg_engine = create_pg_engine()
@@ -113,9 +111,18 @@ class App:
                 repo=registry,
                 permission_service=permission_service,
             )
+            docking_station_service = DockingStationService(
+                repo=registry, permission_service=permission_service
+            )
+            environment_zones_service = EnvironmentZonesService(
+                repo=registry,
+                permission_service=permission_service,
+            )
             map_service = MapService(
                 repo=registry,
                 permission_service=permission_service,
+                environment_zones_service=environment_zones_service,
+                docking_station_service=docking_station_service,
             )
             session_service = SocketSessionService(socket_server)
             map_room_service = MapRoomService(
@@ -129,13 +136,6 @@ class App:
                 map_room_service=map_room_service,
             )
             register_socketio_handlers(socket_server, socketio_handler)
-            docking_station_service = DockingStationService(
-                repo=registry, permission_service=permission_service
-            )
-            environment_zones_service = EnvironmentZonesService(
-                repo=registry,
-                permission_service=permission_service,
-            )
             self.application.state.group_invitation_expiry_task = asyncio.create_task(
                 group_service.run_invitation_expiry_reconciler(),
                 name="group-invitation-expiry-reconciler",
@@ -201,6 +201,7 @@ class App:
                 prefix=settings.API_V1_PREFIX + "/maps",
                 tags=["Maps"],
             )
+
         return start_app
 
     def on_terminate_app(self) -> Callable:

@@ -69,6 +69,21 @@ class MapBoundarySaveDTO(BaseModel):
         return self
 
 
+class MapLayoutBoundarySaveDTO(BaseModel):
+    """Boundary payload nested under an atomic map-layout save."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: MapBoundarySource = MapBoundarySource.DIMENSIONS
+    geometry: PolygonGeometry | None = None
+
+    @model_validator(mode="after")
+    def geometry_required_for_custom_sources(self) -> "MapLayoutBoundarySaveDTO":
+        if self.source != MapBoundarySource.DIMENSIONS and self.geometry is None:
+            raise ValueError("Geometry is required for CUSTOM and TEACH_MODE")
+        return self
+
+
 class MapBoundaryInfo(BaseModel):
     id: UUID
     map_id: UUID
@@ -149,6 +164,41 @@ class EnvironmentZonesSaveDTO(BaseModel):
         zone_ids = [zone.id for zone in self.zones if zone.id is not None]
         if len(zone_ids) != len(set(zone_ids)):
             raise ValueError("Environment zone identifiers must be unique")
+        return self
+
+
+class MapLayoutSaveDTO(BaseModel):
+    """Optional layout sections saved together for one map."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    map_id: UUID
+    boundary: MapLayoutBoundarySaveDTO | None = None
+    environment_zones: list[EnvironmentZoneSaveItemDTO] | None = Field(
+        None, max_length=100
+    )
+    docking_stations: list[DockingStationSaveItemDTO] | None = Field(
+        None, max_length=100
+    )
+
+    @model_validator(mode="after")
+    def identifiers_must_be_unique(self) -> "MapLayoutSaveDTO":
+        if self.environment_zones is not None:
+            zone_ids = [
+                zone.id for zone in self.environment_zones if zone.id is not None
+            ]
+            if len(zone_ids) != len(set(zone_ids)):
+                raise ValueError("Environment zone identifiers must be unique")
+
+        if self.docking_stations is not None:
+            for field in ("id", "robot_id"):
+                identifiers = [
+                    getattr(item, field)
+                    for item in self.docking_stations
+                    if getattr(item, field) is not None
+                ]
+                if len(identifiers) != len(set(identifiers)):
+                    raise ValueError(f"Docking station {field} values must be unique")
         return self
 
 

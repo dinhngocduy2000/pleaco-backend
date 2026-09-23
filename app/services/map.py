@@ -20,6 +20,8 @@ from app.common.schemas.map import (
     MapCreateDTO,
     MapDetailInfo,
     MapInfo,
+    MapLayoutBoundarySaveDTO,
+    MapLayoutSaveDTO,
     MapListInfo,
     MapListQuery,
 )
@@ -31,6 +33,8 @@ from app.models.map import Map
 from app.models.robot import Robot
 from app.models.tag import Tag
 from app.repository.registry import Registry
+from app.services.docking_station import DockingStationService
+from app.services.environment_zones import EnvironmentZonesService
 
 logger = Logger()
 
@@ -38,9 +42,17 @@ logger = Logger()
 class MapService:
     """Coordinate authorized map creation and optional resource assignment."""
 
-    def __init__(self, repo: Registry, permission_service: PermissionService) -> None:
+    def __init__(
+        self,
+        repo: Registry,
+        permission_service: PermissionService,
+        environment_zones_service: EnvironmentZonesService | None = None,
+        docking_station_service: DockingStationService | None = None,
+    ) -> None:
         self.repo = repo
         self.permission_service = permission_service
+        self.environment_zones_service = environment_zones_service
+        self.docking_station_service = docking_station_service
 
     @require_permission(GroupRole.GUEST)
     async def ensure_realtime_access(
@@ -90,59 +102,145 @@ class MapService:
             if map_record is None:
                 raise NotFoundException(message="Map not found")
 
-            # Every boundary source needs finite, positive map bounds for validation.
-            try:
-                x, y = float(map_record.dimension_x), float(map_record.dimension_y)
-            except (ValueError, OverflowError):
-                raise BadRequestException(
-                    message="Map dimensions must be positive finite numbers"
-                ) from None
-            if not all(isfinite(value) and value > 0 for value in (x, y)):
-                raise BadRequestException(
-                    message="Map dimensions must be positive finite numbers"
-                )
-
-            # DIMENSIONS uses the full map rectangle; other sources supply a polygon.
-            geometry = boundary_save.geometry
-            if boundary_save.source == MapBoundarySource.DIMENSIONS:
-                geometry = self._dimension_boundary(x, y)
-            if geometry is None:
-                raise BadRequestException(
-                    message="Geometry is required for CUSTOM and TEACH_MODE"
-                )
-            geometry_json = geometry.model_dump_json()
-            repository = self.repo.map_boundary_repo()
-            # Check polygon validity separately from containment within the map bounds.
-            valid, covered = await repository.inspect_geometry(
+            return await self.save_boundary_in_transaction(
                 session=session,
-                geometry_json=geometry_json,
-                dimension_x=x,
-                dimension_y=y,
+                boundary_save=boundary_save,
+                map_record=map_record,
                 ctx=ctx,
             )
-            if not valid:
-                raise BadRequestException(message="Boundary must be a valid, nonempty polygon")
-            if not covered:
-                raise BadRequestException(message="Boundary must be within the map dimensions")
-
-            # Create the boundary or replace the existing one for this map.
-            result = MapBoundaryInfo.model_validate(
-                await repository.upsert(
-                    session=session,
-                    map_id=map_record.id,
-                    source=boundary_save.source,
-                    geometry_json=geometry_json,
-                    ctx=ctx,
-                )
-            )
-            logger.info(
-                msg=f"Saved boundary {result.id} for map {map_record.id} with source {result.source.value}",
-                context=ctx,
-            )
-            return result
 
         # Keep the map lock, geometry checks, and boundary write in one transaction.
-        return await self.repo.transaction_wrapper(_save)
+        result = await self.repo.transaction_wrapper(_save)
+        logger.info(
+            msg=(
+                f"Saved boundary {result.id} for map {result.map_id} "
+                f"with source {result.source.value}"
+            ),
+            context=ctx,
+        )
+        return result
+
+    async def save_boundary_in_transaction(
+        self,
+        session: AsyncSession,
+        boundary_save: MapBoundarySaveDTO | MapLayoutBoundarySaveDTO,
+        map_record: Map,
+        ctx: AppContext,
+    ) -> MapBoundaryInfo:
+        """Validate and save a boundary using a caller-owned transaction."""
+        # Every boundary source needs finite, positive map bounds for validation.
+        try:
+            x, y = float(map_record.dimension_x), float(map_record.dimension_y)
+        except (ValueError, OverflowError):
+            raise BadRequestException(
+                message="Map dimensions must be positive finite numbers"
+            ) from None
+        if not all(isfinite(value) and value > 0 for value in (x, y)):
+            raise BadRequestException(
+                message="Map dimensions must be positive finite numbers"
+            )
+
+        # DIMENSIONS uses the full map rectangle; other sources supply a polygon.
+        geometry = boundary_save.geometry
+        if boundary_save.source == MapBoundarySource.DIMENSIONS:
+            geometry = self._dimension_boundary(x, y)
+        if geometry is None:
+            raise BadRequestException(
+                message="Geometry is required for CUSTOM and TEACH_MODE"
+            )
+        geometry_json = geometry.model_dump_json()
+        repository = self.repo.map_boundary_repo()
+        valid, covered = await repository.inspect_geometry(
+            session=session,
+            geometry_json=geometry_json,
+            dimension_x=x,
+            dimension_y=y,
+            ctx=ctx,
+        )
+        if not valid:
+            raise BadRequestException(
+                message="Boundary must be a valid, nonempty polygon"
+            )
+        if not covered:
+            raise BadRequestException(
+                message="Boundary must be within the map dimensions"
+            )
+
+        return MapBoundaryInfo.model_validate(
+            await repository.upsert(
+                session=session,
+                map_id=map_record.id,
+                source=boundary_save.source,
+                geometry_json=geometry_json,
+                ctx=ctx,
+            )
+        )
+
+    @require_permission(GroupRole.ADMIN)
+    async def save_layout(
+        self,
+        layout_save: MapLayoutSaveDTO,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> None:
+        """Atomically apply the supplied sections of a map layout."""
+        if group_id is None or group_id != credential.active_group_id:
+            raise ForbiddenException(message="An active group must be selected")
+        environment_zones_service = self.environment_zones_service
+        docking_station_service = self.docking_station_service
+        if environment_zones_service is None or docking_station_service is None:
+            raise RuntimeError("Map layout services are not configured")
+
+        async def _save(session: AsyncSession) -> None:
+            map_record = await self.repo.map_repo().get_by_id_and_group_for_update(
+                session=session,
+                map_id=layout_save.map_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if map_record is None:
+                raise NotFoundException(message="Map not found")
+
+            if layout_save.boundary is not None:
+                await self.save_boundary_in_transaction(
+                    session=session,
+                    boundary_save=layout_save.boundary,
+                    map_record=map_record,
+                    ctx=ctx,
+                )
+
+            if layout_save.environment_zones is not None:
+                await environment_zones_service.save_environment_zones_in_transaction(
+                    session=session,
+                    map_id=map_record.id,
+                    zones=layout_save.environment_zones,
+                    ctx=ctx,
+                )
+
+            if layout_save.docking_stations is not None:
+                await docking_station_service.save_docking_stations_in_transaction(
+                    session=session,
+                    map_id=map_record.id,
+                    stations=layout_save.docking_stations,
+                    group_id=group_id,
+                    ctx=ctx,
+                )
+
+            if layout_save.boundary is not None:
+                await environment_zones_service.validate_all_within_boundary(
+                    session=session,
+                    map_id=map_record.id,
+                    ctx=ctx,
+                )
+                await docking_station_service.validate_all_within_boundary(
+                    session=session,
+                    map_id=map_record.id,
+                    ctx=ctx,
+                )
+
+        await self.repo.transaction_wrapper(_save)
+        logger.info(msg=f"Saved layout for map {layout_save.map_id}", context=ctx)
 
     @staticmethod
     def _dimension_boundary(x: float, y: float) -> PolygonGeometry:
