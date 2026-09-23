@@ -1,4 +1,5 @@
-from typing import Callable
+from collections.abc import Awaitable, Callable
+from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.common.types import T
@@ -15,6 +16,15 @@ from app.repository.bot import BotRepository
 from app.repository.robot_tags import RobotTagsRepository
 from app.repository.tag import TagRepository
 from app.repository.user import UserRepository
+
+
+class TransactionRunner(Protocol):
+    """Run one service operation inside the application's transaction boundary."""
+
+    async def transaction_wrapper(
+        self,
+        tx_func: Callable[[AsyncSession], Awaitable[T]],
+    ) -> T: ...
 
 
 class Registry:
@@ -38,7 +48,9 @@ class Registry:
         self._user_repo = UserRepository(redis_client=redis_client)
         self._group_repo = GroupRepository(redis_client=redis_client)
         self._group_members_repo = GroupMembersRepository(redis_client=redis_client)
-        self._group_invitation_repo = GroupInvitationRepository(redis_client=redis_client)
+        self._group_invitation_repo = GroupInvitationRepository(
+            redis_client=redis_client
+        )
         self._bot_repo = BotRepository()
         self._robot_tags_repo = RobotTagsRepository()
         self._tag_repo = TagRepository()
@@ -49,7 +61,9 @@ class Registry:
         self._map_tags_repo = MapTagsRepository()
         self._redis_client = redis_client
 
-    async def transaction_wrapper(self, tx_func: Callable[[AsyncSession], T]) -> T:
+    async def transaction_wrapper(
+        self, tx_func: Callable[[AsyncSession], Awaitable[T]]
+    ) -> T:
         try:
             async_session = async_sessionmaker(self._pg_engine, expire_on_commit=False)
             session = async_session()
