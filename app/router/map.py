@@ -47,6 +47,26 @@ class MapRouter:
         )
         self.router.add_api_route(
             path="/{map_id}",
+            endpoint=self.handler.update_map,
+            methods=["PUT"],
+            response_model=str,
+            status_code=status.HTTP_200_OK,
+            summary="Update active-group map metadata",
+            description=(
+                "Update a map name and optionally its description and tags. "
+                "Null or omitted description and tags are unchanged; an empty tag "
+                "list clears all tags."
+            ),
+            responses={
+                400: {"description": "Map name already exists in the active group"},
+                401: {"description": "Authentication required"},
+                403: {"description": "Active-group Owner or Admin permission required"},
+                404: {"description": "Map or tag not found in the active group"},
+                422: {"description": "Invalid request fields"},
+            },
+        )
+        self.router.add_api_route(
+            path="/{map_id}",
             endpoint=self.handler.get_map_detail,
             methods=["GET"],
             response_model=BaseResponse[MapDetailInfo],

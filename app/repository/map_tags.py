@@ -2,7 +2,8 @@ from collections import defaultdict
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
@@ -12,6 +13,39 @@ from app.models.tag import Tag
 
 
 class MapTagsRepository:
+    async def synchronize_for_map(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        tag_ids: Sequence[UUID],
+        ctx: AppContext,
+    ) -> bool:
+        """Synchronize links for a map; caller must hold its map row lock."""
+        result = await session.execute(
+            select(map_tags.c.tag_id).where(map_tags.c.map_id == map_id)
+        )
+        current_ids = set(result.scalars().all())
+        requested_ids = set(tag_ids)
+        additions = requested_ids - current_ids
+        removals = current_ids - requested_ids
+
+        if additions:
+            await session.execute(
+                insert(map_tags)
+                .values(
+                    [{"map_id": map_id, "tag_id": tag_id} for tag_id in additions]
+                )
+                .on_conflict_do_nothing(index_elements=["map_id", "tag_id"])
+            )
+        if removals:
+            await session.execute(
+                delete(map_tags).where(
+                    map_tags.c.map_id == map_id,
+                    map_tags.c.tag_id.in_(removals),
+                )
+            )
+        return bool(additions or removals)
+
     async def get_by_map_ids(
         self,
         session: AsyncSession,

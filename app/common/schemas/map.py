@@ -41,6 +41,27 @@ class MapCreateDTO(BaseModel):
         return identifiers
 
 
+class MapUpdateDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, description="Map name")
+    description: str | None = Field(
+        None, description="Optional map description; null leaves it unchanged"
+    )
+    tags: list[UUID] | None = Field(
+        None, description="Existing tag identifiers; an empty list clears all tags"
+    )
+
+    @field_validator("tags")
+    @classmethod
+    def tag_identifiers_must_be_unique(
+        cls, identifiers: list[UUID] | None
+    ) -> list[UUID] | None:
+        if identifiers is not None and len(identifiers) != len(set(identifiers)):
+            raise ValueError("Tag identifiers must be unique")
+        return identifiers
+
+
 class MapInfo(BaseModel):
     id: UUID
     group_id: UUID

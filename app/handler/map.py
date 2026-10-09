@@ -7,6 +7,7 @@ from app.common.enum.context_actions import (
     CREATE_MAP,
     LIST_MAPS,
     SAVE_MAP_LAYOUT,
+    UPDATE_MAP,
 )
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
@@ -18,6 +19,7 @@ from app.common.schemas.map import (
     MapLayoutSaveDTO,
     MapListInfo,
     MapListQuery,
+    MapUpdateDTO,
 )
 from app.common.schemas.user import Credential
 from app.services.map import MapService
@@ -59,6 +61,23 @@ class MapHandler:
             message="Map created",
             statusCode=201,
         )
+
+    @exception_handler
+    async def update_map(
+        self,
+        map_id: UUID,
+        map_update: MapUpdateDTO,
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> str:
+        ctx = AppContext(trace_id=uuid4(), action=UPDATE_MAP, actor=credential.id)
+        await self.service.update_map(
+            map_id=map_id,
+            map_update=map_update,
+            group_id=credential.active_group_id,
+            credential=credential,
+            ctx=ctx,
+        )
+        return "Success"
 
     @exception_handler
     async def get_map_detail(

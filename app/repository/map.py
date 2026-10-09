@@ -200,6 +200,29 @@ class MapRepository:
         )
         return result.scalar_one_or_none()
 
+    async def update_metadata(
+        self,
+        session: AsyncSession,
+        *,
+        map_record: Map,
+        name: str,
+        description: str | None,
+        update_description: bool,
+        force_timestamp: bool,
+        ctx: AppContext,
+    ) -> bool:
+        """Update supplied scalar metadata and return whether it changed."""
+        changed = map_record.name != name
+        if changed:
+            map_record.name = name
+        if update_description and map_record.description != description:
+            map_record.description = description
+            changed = True
+        if changed or force_timestamp:
+            map_record.updated_at = func.now()
+            await session.flush()
+        return changed or force_timestamp
+
     async def create_map(
         self,
         session: AsyncSession,
