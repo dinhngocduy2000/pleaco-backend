@@ -313,6 +313,7 @@ async def test_map_tags_repository_returns_group_scoped_tags_by_map() -> None:
 def test_router_declares_map_list_contract() -> None:
     handler = SimpleNamespace(
         create_map=lambda: None,
+        update_map=lambda: None,
         list_maps=lambda: None,
         save_layout=lambda: None,
         get_map_detail=lambda: None,
