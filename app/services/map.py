@@ -373,47 +373,93 @@ class MapService:
             if map_record is None:
                 raise NotFoundException(message="Map not found")
 
-            existing_name = await map_repository.get_by_group_and_name(
-                session=session, group_id=group_id, name=map_update.name, ctx=ctx
+            name, description = await self._validate_map_update_metadata(
+                session=session,
+                group_id=group_id,
+                map_record=map_record,
+                map_update=map_update,
+                ctx=ctx,
             )
-            if existing_name is not None and existing_name.id != map_id:
-                raise BadRequestException(
-                    message="A map with this name already exists in this group"
-                )
-
-            tags_changed = False
-            if map_update.tags is not None:
-                tags = await self.repo.tag_repo().get_by_ids_and_group(
-                    session=session,
-                    tag_ids=map_update.tags,
-                    group_id=group_id,
-                    ctx=ctx,
-                )
-                if len(tags) != len(map_update.tags):
-                    raise NotFoundException(
-                        message="One or more tags were not found"
-                    )
-                tags_changed = await self.repo.map_tags_repo().synchronize_for_map(
-                    session=session,
-                    map_id=map_id,
-                    tag_ids=map_update.tags,
-                    ctx=ctx,
-                )
+            tags_changed = await self._validate_and_synchronize_map_tags(
+                session=session,
+                map_id=map_id,
+                group_id=group_id,
+                tag_ids=map_update.tags,
+                ctx=ctx,
+            )
 
             await map_repository.update_metadata(
                 session=session,
                 map_record=map_record,
-                name=map_update.name,
-                description=map_update.description,
-                update_description=(
-                    "description" in map_update.model_fields_set
-                    and map_update.description is not None
-                ),
+                name=name,
+                description=description,
+                update_description=True,
                 force_timestamp=tags_changed,
                 ctx=ctx,
             )
 
         await self.repo.transaction_wrapper(_update)
+
+    async def _validate_map_update_metadata(
+        self,
+        session: AsyncSession,
+        group_id: UUID,
+        map_record: Map,
+        map_update: MapUpdateDTO,
+        ctx: AppContext,
+    ) -> tuple[str, str | None]:
+        """Validate the requested map name and resolve the description value."""
+        if map_record.name != map_update.name:
+            existing_name = await self.repo.map_repo().get_by_group_and_name(
+                session=session,
+                group_id=group_id,
+                name=map_update.name,
+                ctx=ctx,
+            )
+            if existing_name is not None:
+                logger.warning(
+                    msg=f"Map name '{map_update.name}' already exists in group {group_id}",
+                    context=ctx,
+                )
+                raise BadRequestException(
+                    message="A map with this name already exists in this group"
+                )
+
+        description = map_record.description
+        if (
+            "description" in map_update.model_fields_set
+            and map_update.description is not None
+        ):
+            description = map_update.description
+        return map_update.name, description
+
+    async def _validate_and_synchronize_map_tags(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        group_id: UUID,
+        tag_ids: list[UUID] | None,
+        ctx: AppContext,
+    ) -> bool:
+        """Validate group ownership and synchronize the map's requested tags."""
+        if tag_ids is None:
+            return False
+
+        tags = await self.repo.tag_repo().get_by_ids_and_group(
+            session=session,
+            tag_ids=tag_ids,
+            group_id=group_id,
+            ctx=ctx,
+        )
+        if len(tags) != len(tag_ids):
+            raise NotFoundException(message="One or more tags were not found")
+
+        return await self.repo.map_tags_repo().synchronize_for_map(
+            session=session,
+            map_id=map_id,
+            tag_ids=tag_ids,
+            ctx=ctx,
+        )
 
     async def _validate_tags(
         self,
