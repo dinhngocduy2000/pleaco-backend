@@ -27,7 +27,7 @@ class RobotStatusRealtimePublisher:
         ip_address: str | None,
         connection_status: RobotConnectionStatus | str,
         operational_status: RobotOperationalStatus | str,
-        last_seen_at: datetime,
+        last_seen_at: datetime | None,
     ) -> None:
         """Emit one JSON-safe status payload to the trusted group room.
 

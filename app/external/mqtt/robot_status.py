@@ -8,7 +8,12 @@ import paho.mqtt.client as mqtt
 from pydantic import ValidationError
 
 from app.common.middleware.logger import Logger
-from app.common.schemas.robot_status import MqttRobotStatusMessage, RobotStatusEvent
+from app.common.schemas.robot_status import (
+    MqttRobotHeartbeatMessage,
+    MqttRobotStatusMessage,
+    RobotHeartbeatEvent,
+    RobotStatusEvent,
+)
 from app.core.config import settings
 
 logger = Logger()
@@ -17,8 +22,9 @@ logger = Logger()
 class RobotStatusMqttIngestion:
     topic_filter = "pleco/robots/+/status"
 
-    def __init__(self, robot_status_topic) -> None:
+    def __init__(self, robot_status_topic, bot_status_service) -> None:
         self._robot_status_topic = robot_status_topic
+        self._bot_status_service = bot_status_service
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="pleaco-backend")
         if settings.MQTT_USERNAME:
@@ -66,7 +72,21 @@ class RobotStatusMqttIngestion:
             logger.error(msg=f"Rejecting unexpected MQTT topic '{topic}'")
             return
         try:
-            payload = MqttRobotStatusMessage.model_validate(json.loads(raw_payload.decode("utf-8")))
+            raw = json.loads(raw_payload.decode("utf-8"))
+            if isinstance(raw, dict) and raw.get("event") == "robot.heartbeat":
+                heartbeat = MqttRobotHeartbeatMessage.model_validate(raw)
+                if heartbeat.robot_id != topic_robot_id:
+                    logger.error(msg="Rejecting MQTT robot heartbeat with topic/payload robot_id mismatch")
+                    return
+                await self._bot_status_service.process_heartbeat_event(
+                    RobotHeartbeatEvent(
+                        message_id=heartbeat.message_id,
+                        robot_id=heartbeat.robot_id,
+                        occurred_at=heartbeat.timestamp,
+                    )
+                )
+                return
+            payload = MqttRobotStatusMessage.model_validate(raw)
         except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as error:
             logger.error(msg=f"Rejecting invalid MQTT robot status payload: {error}")
             return
@@ -87,13 +107,10 @@ class RobotStatusMqttIngestion:
             operational_status=payload.data.operational_status,
             occurred_at=payload.timestamp,
         )
-        await self._robot_status_topic.publish_status(event)
-        logger.info(
-            msg=(
-                f"Forwarded MQTT {payload.event} for robot {payload.robot_id} "
-                f"sequence={payload.sequence_number} to RabbitMQ"
-            )
-        )
+        if event.type == "robot.connection.changed":
+            await self._robot_status_topic.publish_status(event)
+        else:
+            await self._bot_status_service.process_status_event(event)
 
     @staticmethod
     def _robot_id_from_topic(topic: str) -> UUID | None:

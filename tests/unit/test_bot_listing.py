@@ -63,6 +63,8 @@ class PermissionServiceStub:
 class BotRepositoryStub:
     def __init__(self) -> None:
         self.bot_id = uuid4()
+        self.connection_status = RobotConnectionStatus.ONLINE
+        self.last_seen_at = None
 
     async def list_bots(self, **kwargs):
         return [
@@ -75,8 +77,8 @@ class BotRepositoryStub:
                 "ip_address": "192.168.1.15",
                 "operational_status": RobotOperationalStatus.IDLE,
                 "created_at": datetime.now(timezone.utc),
-                "connection_status": RobotConnectionStatus.ONLINE,
-                "last_seen_at": None,
+                "connection_status": self.connection_status,
+                "last_seen_at": self.last_seen_at,
             }
         ], 1
 
@@ -105,7 +107,20 @@ class RobotTagsRepositoryStub:
         return {robot_id: [tag] for robot_id in robot_ids}
 
 
-def _service(role: GroupRole | None) -> tuple[BotService, BotRepositoryStub]:
+class RedisStub:
+    def __init__(self, value=None, fails=False):
+        self.value = value
+        self.fails = fails
+        self.keys = []
+
+    async def mget(self, keys):
+        self.keys = keys
+        if self.fails:
+            raise ConnectionError("Redis unavailable")
+        return [self.value for _ in keys]
+
+
+def _service(role: GroupRole | None, redis=None) -> tuple[BotService, BotRepositoryStub]:
     bot_repository = BotRepositoryStub()
     robot_tags_repository = RobotTagsRepositoryStub()
     return BotService(
@@ -116,6 +131,7 @@ def _service(role: GroupRole | None) -> tuple[BotService, BotRepositoryStub]:
             transaction_wrapper=lambda callback: callback(SimpleNamespace()),
         ),
         permission_service=PermissionServiceStub(role),
+        redis_client=redis,
     ), bot_repository
 
 
@@ -153,6 +169,45 @@ async def test_all_accepted_group_roles_can_list_bots(role: GroupRole) -> None:
     assert bots[0].serial_num == "SN-001"
     assert bots[0].map_name is None
     assert [tag.name for tag in bots[0].tags] == ["Operations"]
+
+
+@pytest.mark.asyncio
+async def test_bot_list_uses_live_freshness_online_and_snapshot_offline() -> None:
+    group_id = uuid4()
+    credential = _credential()
+    live = datetime(2026, 10, 15, tzinfo=timezone.utc)
+    snapshot = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    redis = RedisStub(live.isoformat())
+    service, repository = _service(GroupRole.GUEST, redis)
+    repository.last_seen_at = snapshot
+
+    online, _ = await service.list_bots(
+        query=BotListQuery(group_id=group_id), group_id=group_id,
+        credential=credential, ctx=_ctx(credential.id),
+    )
+    assert online[0].last_seen_at == live
+    assert redis.keys == [f"robot:{repository.bot_id}:last_seen_at"]
+
+    redis.value = None
+    expired, _ = await service.list_bots(
+        query=BotListQuery(group_id=group_id), group_id=group_id,
+        credential=credential, ctx=_ctx(credential.id),
+    )
+    assert expired[0].last_seen_at is None
+
+    redis.fails = True
+    unavailable, _ = await service.list_bots(
+        query=BotListQuery(group_id=group_id), group_id=group_id,
+        credential=credential, ctx=_ctx(credential.id),
+    )
+    assert unavailable[0].last_seen_at is None
+
+    repository.connection_status = RobotConnectionStatus.OFFLINE
+    offline, _ = await service.list_bots(
+        query=BotListQuery(group_id=group_id), group_id=group_id,
+        credential=credential, ctx=_ctx(credential.id),
+    )
+    assert offline[0].last_seen_at == snapshot
 
 
 @pytest.mark.asyncio

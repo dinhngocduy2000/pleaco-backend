@@ -1,11 +1,13 @@
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, Protocol, TypeVar
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
-from app.common.enum.robot import RobotOperationalStatus
+from app.common.enum.robot import RobotConnectionStatus, RobotOperationalStatus
+from app.common.middleware.logger import Logger
 from app.common.enum.user_roles import GroupRole
 from app.common.exceptions import (
     BadRequestException,
@@ -23,10 +25,13 @@ from app.common.schemas.bot import (
 from app.common.schemas.group import GroupMemberInfo
 from app.common.schemas.tags import TagInfo
 from app.common.schemas.user import Credential
+from app.external.redis.redis import RedisClient
 from app.core.rbac.role_validation import require_permission
 from app.models.robot import Robot
 from app.models.tag import Tag
 from app.repository.registry import TransactionRunner
+
+logger = Logger()
 
 T = TypeVar("T")
 
@@ -132,12 +137,14 @@ class BotService:
         robot_tags_repository: RobotTagsRepositoryPort,
         transactions: TransactionRunner,
         permission_service: PermissionChecker,
+        redis_client: RedisClient | None = None,
     ) -> None:
         self.bot_repository = bot_repository
         self.tag_repository = tag_repository
         self.robot_tags_repository = robot_tags_repository
         self.transactions = transactions
         self.permission_service = permission_service
+        self.redis_client = redis_client
 
     @require_permission(GroupRole.MODERATOR)
     async def create_bot(
@@ -232,7 +239,45 @@ class BotService:
                 for row in rows
             ], total
 
-        return await self.transactions.transaction_wrapper(_list_bots)
+        bots, total = await self.transactions.transaction_wrapper(_list_bots)
+        return await self._with_live_last_seen(bots), total
+
+    async def _with_live_last_seen(self, bots: list[BotListInfo]) -> list[BotListInfo]:
+        """Use Redis timestamps for online bots and saved timestamps for offline bots."""
+        freshness = await self._get_online_bot_last_seen(bots)
+        result = []
+        for bot in bots:
+            result.append(self._with_bot_last_seen(bot, freshness.get(bot.id)))
+        return result
+
+    @staticmethod
+    def _with_bot_last_seen(bot: BotListInfo, raw: str | None) -> BotListInfo:
+        """Use live freshness for an online bot; keep an offline bot's saved value."""
+        if bot.connection_status != RobotConnectionStatus.ONLINE:
+            return bot
+        try:
+            timestamp = datetime.fromisoformat(raw) if raw else None
+            if timestamp is not None and timestamp.tzinfo is None:
+                timestamp = None
+        except (TypeError, ValueError):
+            timestamp = None
+        return bot.model_copy(update={"last_seen_at": timestamp})
+
+    async def _get_online_bot_last_seen(
+        self, bots: list[BotListInfo]
+    ) -> dict[UUID, str | None]:
+        """Read live last-seen values for bots marked online in PostgreSQL."""
+        online = [bot for bot in bots if bot.connection_status == RobotConnectionStatus.ONLINE]
+        freshness = {}
+        if online and self.redis_client is not None:
+            try:
+                values = await self.redis_client.mget(
+                    [f"robot:{bot.id}:last_seen_at" for bot in online]
+                )
+                freshness = dict(zip((bot.id for bot in online), values))
+            except Exception:
+                logger.exception(msg="Redis unavailable while reading robot heartbeat freshness")
+        return freshness
 
     @require_permission(GroupRole.GUEST)
     async def list_bot_key_value(
