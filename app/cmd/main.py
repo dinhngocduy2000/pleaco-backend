@@ -85,7 +85,7 @@ class App:
                 repo=registry, realtime_publisher=robot_status_publisher
             )
             robot_status_topic = RobotStatusTopic(rabbitmq_client, bot_status_service)
-            mqtt_ingestion = RobotStatusMqttIngestion(robot_status_topic)
+            mqtt_ingestion = RobotStatusMqttIngestion(robot_status_topic, bot_status_service)
             self.application.state.mqtt_ingestion = mqtt_ingestion
             await init_topics(
                 consumers={
@@ -106,6 +106,7 @@ class App:
                 robot_tags_repository=registry.robot_tags_repo(),
                 transactions=registry,
                 permission_service=permission_service,
+                redis_client=redis_client,
             )
             tag_service = TagService(
                 repo=registry,

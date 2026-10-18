@@ -106,7 +106,7 @@ class BotListInfo(BaseModel):
     connection_status: RobotConnectionStatus = Field(
         ..., description="Current connection status"
     )
-    last_seen_at: datetime | None = Field(None, description="Most recent accepted device event")
+    last_seen_at: datetime | None = Field(None, description="Live heartbeat time when online; last-known time when offline")
     tags: list[TagInfo] = Field(
         default_factory=list,
         description="Tags assigned to the bot",

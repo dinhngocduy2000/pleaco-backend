@@ -12,6 +12,32 @@ from app.common.enum.robot import RobotConnectionStatus, RobotOperationalStatus
 RobotStatusEventType = Literal["robot.online", "robot.offline", "robot.status.updated"]
 
 
+class MqttRobotHeartbeatMessage(BaseModel):
+    """Heartbeat payload that refreshes liveness without changing robot state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: UUID
+    robot_id: UUID
+    event: Literal["robot.heartbeat"]
+    timestamp: datetime
+
+    @field_validator("timestamp")
+    @classmethod
+    def timestamp_must_be_timezone_aware(cls, timestamp: datetime) -> datetime:
+        if timestamp.tzinfo is None:
+            raise ValueError("timestamp must include a UTC offset")
+        return timestamp
+
+
+class RobotHeartbeatEvent(BaseModel):
+    """Internal heartbeat event with ordering independent from status events."""
+
+    message_id: UUID
+    robot_id: UUID
+    occurred_at: datetime
+
+
 class RobotStatusData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,18 +94,6 @@ class RobotStatusEvent(BaseModel):
     operational_status: RobotOperationalStatus | None = None
     occurred_at: datetime
 
-    def cache_state(self, *, last_seen_at: datetime) -> dict[str, str | int | None]:
-        return {
-            "robot_id": str(self.robot_id),
-            "ip_address": str(self.ip_address) if self.ip_address is not None else None,
-            "connection_status": self.connection_status.value if self.connection_status else None,
-            "operational_status": self.operational_status.value if self.operational_status else None,
-            "last_seen_at": last_seen_at.isoformat(),
-            "last_sequence_number": self.sequence_number,
-            "last_message_id": str(self.message_id),
-        }
-
-
 class RobotStatusRealtimePayload(BaseModel):
     """Public Socket.IO payload for a reconciled robot status change."""
 
@@ -89,4 +103,4 @@ class RobotStatusRealtimePayload(BaseModel):
     ip_address: IPvAnyAddress | None = None
     connection_status: RobotConnectionStatus
     operational_status: RobotOperationalStatus
-    last_seen_at: datetime
+    last_seen_at: datetime | None

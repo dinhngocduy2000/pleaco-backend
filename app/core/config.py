@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, PositiveInt
 
 
 class AppEnvTypes(Enum):
@@ -59,6 +59,7 @@ class Settings(BaseAppSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PASSWORD: str
     REDIS_PORT: int = 6379
+    HEARTBEAT_REDIS_TTL_SECONDS: PositiveInt = 60
     cache_token_hash: Optional[str] = "token-hashed"
     CACHE_OTP_CODE: Optional[str] = "CACHE_OTP_CODE"
 

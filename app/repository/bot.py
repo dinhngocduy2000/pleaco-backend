@@ -137,6 +137,14 @@ class BotRepository:
         result = await session.execute(select(Robot).where(Robot.id == bot_id))
         return result.scalar_one_or_none()
 
+    async def get_by_id_for_update(
+        self, session: AsyncSession, bot_id: UUID
+    ) -> Robot | None:
+        result = await session.execute(
+            select(Robot).where(Robot.id == bot_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_ids_and_group_for_update(
         self,
         session: AsyncSession,
@@ -173,7 +181,7 @@ class BotRepository:
         ip_address: str | None,
         connection_status,
         operational_status,
-        last_seen_at: datetime,
+        last_seen_at: datetime | None,
         last_sequence_number: int,
         last_message_id: UUID,
         ctx: AppContext,
@@ -184,7 +192,8 @@ class BotRepository:
             bot.connection_status = connection_status
         if operational_status is not None:
             bot.operational_status = operational_status
-        bot.last_seen_at = last_seen_at
+        if last_seen_at is not None:
+            bot.last_seen_at = last_seen_at
         bot.last_sequence_number = last_sequence_number
         bot.last_message_id = last_message_id
         await session.flush()
