@@ -100,13 +100,13 @@ class RoomService:
         except Exception as error:
             raise RoomOperationError from error
 
-    async def emit(self, event: str, payload: dict, room: str) -> None:
-        """Deliver an event to every socket currently in a room.
+    async def emit(self, event: str, payload: dict, room: str | list[str]) -> None:
+        """Deliver once per socket in one room or the union of several rooms.
 
         Args:
             event: Public Socket.IO event name.
             payload: JSON-compatible event body.
-            room: Canonical destination room name.
+            room: One canonical room name or a list of room names.
 
         Raises:
             RoomOperationError: If Socket.IO cannot emit the event.

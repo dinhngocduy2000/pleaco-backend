@@ -4,8 +4,7 @@ This guide describes how the Pleco backend creates Socket.IO connections, assign
 automatic rooms, authorizes map-room subscriptions, and routes room-scoped events.
 
 The Socket.IO endpoint uses the default namespace `/` and transport path
-`/api/v1/ws`. The existing native robot-status WebSocket at
-`/api/v1/realtime/robots` remains a separate, unchanged flow.
+`/api/v1/ws`.
 
 ## Component Map
 
@@ -187,8 +186,12 @@ Leaving a room more than once is treated as success.
 
 ## Outgoing Room-Scoped Events
 
-No production map-telemetry emitter is connected in the current implementation.
-When one is added, it should use the generic room API instead of calling
+Robot connectivity changes use `RobotStatusRealtimePublisher` to target the
+robot's group room and assigned map room with one Socket.IO emit. A socket in
+both rooms receives one copy. For the device-to-frontend route and public
+payload, see [Robot Status: Mock Device to Frontend](ROBOT_STATUS_REALTIME_DATA_FLOW.md).
+
+Other map telemetry emitters should use the generic room API instead of calling
 `socket_server.emit()` from a domain service:
 
 ```mermaid
@@ -234,21 +237,3 @@ Failures return only a stable code:
 When a socket disconnects, Socket.IO removes its session and all room
 memberships. The disconnect handler records the lifecycle event but does not
 persist presence or duplicate Socket.IO's cleanup behavior.
-
-## Current Migration Boundary
-
-The following path still uses the native WebSocket implementation and is not
-connected to Socket.IO map rooms yet:
-
-```text
-Robot MQTT status
-  -> RabbitMQ robot-status topic
-  -> BotStatusService
-  -> RobotStatusWebSocketManager
-  -> /api/v1/realtime/robots
-```
-
-Future migration should introduce a focused realtime emitter after the domain
-status update and target the appropriate centralized room name. The existing
-native path should remain until equivalent Socket.IO delivery is implemented
-and verified.

@@ -8,6 +8,8 @@ import pytest
 
 from app.common.enum.robot import RobotConnectionStatus, RobotOperationalStatus
 from app.common.schemas.robot_status import RobotHeartbeatEvent, RobotStatusEvent
+from app.external.realtime.robot_status import RobotStatusRealtimePublisher
+from app.external.realtime.rooms import RoomOperationError
 from app.services.bot_status import BotStatusService
 
 
@@ -98,6 +100,11 @@ class FakeRealtimePublisher:
         self.events.append(kwargs)
 
 
+class FailingRoomService:
+    async def emit(self, _event, _payload, _rooms):
+        raise RoomOperationError("Socket.IO unavailable")
+
+
 def event(robot_id, sequence=2, *, status=RobotConnectionStatus.ONLINE,
           operational=None, kind="robot.connection.changed"):
     return RobotStatusEvent(
@@ -108,9 +115,9 @@ def event(robot_id, sequence=2, *, status=RobotConnectionStatus.ONLINE,
     )
 
 
-def robot(robot_id, *, status=RobotConnectionStatus.OFFLINE):
+def robot(robot_id, *, status=RobotConnectionStatus.OFFLINE, map_id=None):
     return SimpleNamespace(
-        id=robot_id, group_id=uuid4(), ip_address="192.168.10.24",
+        id=robot_id, group_id=uuid4(), map_id=map_id, ip_address="192.168.10.24",
         connection_status=status, operational_status=RobotOperationalStatus.IDLE,
         last_seen_at=None, last_sequence_number=1, last_message_id=uuid4(),
     )
@@ -166,7 +173,8 @@ async def test_unknown_offline_and_redis_failure_do_not_refresh_heartbeat():
 @pytest.mark.asyncio
 async def test_online_heartbeat_offline_snapshots_last_heartbeat():
     robot_id = uuid4()
-    bot = robot(robot_id)
+    map_id = uuid4()
+    bot = robot(robot_id, map_id=map_id)
     registry = FakeRegistry(bot)
     publisher = FakeRealtimePublisher()
     service = BotStatusService(registry, publisher)
@@ -182,6 +190,10 @@ async def test_online_heartbeat_offline_snapshots_last_heartbeat():
     assert f"robot:{robot_id}:last_seen_at" not in registry._redis_client.values
     assert registry._bot_repository.update_calls == 2
     assert len(publisher.events) == 2
+    assert all(
+        published["group_id"] == bot.group_id and published["map_id"] == map_id
+        for published in publisher.events
+    )
     await service.process_heartbeat_event(heartbeat(robot_id))
     assert f"robot:{robot_id}:last_seen_at" not in registry._redis_client.values
 
@@ -245,7 +257,37 @@ async def test_operational_update_preserves_connectivity_timestamp():
     )
     assert bot.operational_status == RobotOperationalStatus.EXECUTING
     assert bot.last_seen_at == datetime(2025, 1, 1, tzinfo=timezone.utc)
-    assert len(publisher.events) == 1
+    assert publisher.events == []
+
+
+@pytest.mark.asyncio
+async def test_ip_only_update_does_not_broadcast():
+    robot_id = uuid4()
+    bot = robot(robot_id, status=RobotConnectionStatus.ONLINE)
+    bot.ip_address = "192.168.10.25"
+    registry = FakeRegistry(bot)
+    publisher = FakeRealtimePublisher()
+
+    await BotStatusService(registry, publisher).process_status_event(event(robot_id))
+
+    assert bot.ip_address == "192.168.10.24"
+    assert bot.last_sequence_number == 2
+    assert registry._bot_repository.update_calls == 1
+    assert publisher.events == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_failure_does_not_undo_connectivity_change():
+    robot_id = uuid4()
+    bot = robot(robot_id, map_id=uuid4())
+    registry = FakeRegistry(bot)
+    publisher = RobotStatusRealtimePublisher(FailingRoomService())  # type: ignore[arg-type]
+
+    await BotStatusService(registry, publisher).process_status_event(event(robot_id))
+
+    assert bot.connection_status == RobotConnectionStatus.ONLINE
+    assert bot.last_sequence_number == 2
+    assert registry._bot_repository.update_calls == 1
 
 
 @pytest.mark.asyncio
