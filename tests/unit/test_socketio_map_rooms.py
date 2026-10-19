@@ -161,6 +161,33 @@ async def test_room_membership_is_idempotent_and_emit_is_room_scoped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_emitting_to_group_and_map_delivers_once_per_socket(monkeypatch) -> None:
+    server = socketio.AsyncServer(async_mode="asgi")
+    group_room = Rooms.group(uuid4())
+    map_room = Rooms.map(uuid4())
+    other_room = Rooms.map(uuid4())
+    group_sid = await server.manager.connect("group-client", "/")
+    both_sid = await server.manager.connect("both-client", "/")
+    other_sid = await server.manager.connect("other-client", "/")
+    await server.enter_room(group_sid, group_room)
+    await server.enter_room(both_sid, group_room)
+    await server.enter_room(both_sid, map_room)
+    await server.enter_room(other_sid, other_room)
+
+    recipients = []
+
+    async def capture_packet(eio_sid, _packet):
+        recipients.append(eio_sid)
+
+    monkeypatch.setattr(server, "_send_eio_packet", capture_packet)
+    await RoomService(server).emit(
+        "robot.status", {"connection_status": "ONLINE"}, [group_room, map_room]
+    )
+
+    assert sorted(recipients) == ["both-client", "group-client"]
+
+
+@pytest.mark.asyncio
 async def test_room_service_hides_transport_errors() -> None:
     server = FakeSocketServer()
     server.fail_room_operations = True

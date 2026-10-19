@@ -74,7 +74,7 @@ class BotStatusService:
         if result is None:
             return
 
-        state, status_changed, connection_changed, last_seen_at = result
+        state, connection_changed, last_seen_at = result
         # Build the cache value from the accepted database state, including
         # its sequence. The event payload cannot choose a group or override
         # values retained from the existing robot row.
@@ -100,11 +100,12 @@ class BotStatusService:
             # authoritative, and an existing status change can still broadcast.
             logger.exception(msg=f"Unable to cache robot status for {event.robot_id}")
 
-        # A newer event with unchanged visible state still persists its
-        # ordering fields, but it does not create a redundant broadcast.
-        if status_changed and is_current:
+        # Only connectivity transitions reach Socket.IO. Newer operational or
+        # IP updates still persist their ordering fields and cached state.
+        if connection_changed and is_current:
             await self._realtime_publisher.publish(
                 group_id=state["group_id"],
+                map_id=state["map_id"],
                 robot_id=event.robot_id,
                 ip_address=state["ip_address"],
                 connection_status=state["connection_status"],
@@ -141,13 +142,12 @@ class BotStatusService:
 
     async def _save_status(
         self, session: AsyncSession, event: RobotStatusEvent, received_at: datetime
-    ) -> tuple[dict, bool, bool, datetime | None] | None:
+    ) -> tuple[dict, bool, datetime | None] | None:
         """Check ordering and persist one event while holding the robot row lock.
 
         Every accepted newer event persists its sequence. ``last_seen_at``
         changes only on a connectivity transition; going offline snapshots
-        the latest Redis heartbeat when one is available. The return values
-        distinguish a visible status change from a connectivity transition.
+        the latest Redis heartbeat when one is available.
         """
         bot = await self.repo.bot_repo().get_by_id_for_update(session, event.robot_id)
         if bot is None:
@@ -159,12 +159,16 @@ class BotStatusService:
             return None
 
         state = self._new_state(old_state, event)
-        status_changed, connection_changed = self._status_changes(old_state, state)
+        connection_changed = self._connection_changed(old_state, state)
         last_seen_at = await self._last_seen_for_status(
             bot, event.robot_id, state["connection_status"], connection_changed, received_at
         )
         await self._write_status(session, bot, event, state, last_seen_at, connection_changed)
-        return ({**state, "group_id": bot.group_id}, status_changed, connection_changed, last_seen_at)
+        return (
+            {**state, "group_id": bot.group_id, "map_id": bot.map_id},
+            connection_changed,
+            last_seen_at,
+        )
 
     def _accept_status_event(self, bot: Robot, event: RobotStatusEvent, old_state: dict) -> bool:
         """Reject stale events and operational updates that cannot apply yet."""
@@ -187,16 +191,9 @@ class BotStatusService:
         return True
 
     @staticmethod
-    def _status_changes(old_state: dict, state: dict) -> tuple[bool, bool]:
-        """Return whether visible status or connectivity changed."""
-        connection_changed = state["connection_status"] != old_state["connection_status"]
-        # IP or operational changes can require a client update without
-        # counting as a connectivity transition for last_seen_at persistence.
-        status_changed = any(
-            state[field] != old_state[field]
-            for field in ("ip_address", "connection_status", "operational_status")
-        )
-        return status_changed, connection_changed
+    def _connection_changed(old_state: dict, state: dict) -> bool:
+        """Check whether this event changes the robot's connectivity."""
+        return state["connection_status"] != old_state["connection_status"]
 
     async def _last_seen_for_status(
         self, bot: Robot, robot_id, connection_status: str,

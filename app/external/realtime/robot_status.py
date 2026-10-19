@@ -1,4 +1,4 @@
-"""Socket.IO delivery for group-scoped robot status changes."""
+"""Socket.IO delivery for robot connectivity changes."""
 
 from datetime import datetime
 from uuid import UUID
@@ -12,7 +12,7 @@ logger = Logger()
 
 
 class RobotStatusRealtimePublisher:
-    """Publish reconciled robot status to its persisted group's room."""
+    """Publish robot connectivity to its persisted group and assigned map."""
 
     event_name = "robot.status"
 
@@ -23,13 +23,14 @@ class RobotStatusRealtimePublisher:
         self,
         *,
         group_id: UUID,
+        map_id: UUID | None,
         robot_id: UUID,
         ip_address: str | None,
         connection_status: RobotConnectionStatus | str,
         operational_status: RobotOperationalStatus | str,
         last_seen_at: datetime | None,
     ) -> None:
-        """Emit one JSON-safe status payload to the trusted group room.
+        """Emit one JSON-safe status payload to the trusted audience rooms.
 
         Realtime delivery is best-effort. A failure is logged but not raised so
         an event already reconciled in PostgreSQL is not requeued by RabbitMQ.
@@ -41,11 +42,14 @@ class RobotStatusRealtimePublisher:
             operational_status=operational_status,
             last_seen_at=last_seen_at,
         ).model_dump(mode="json")
+        rooms: str | list[str] = Rooms.group(group_id)
+        if map_id is not None:
+            rooms = [rooms, Rooms.map(map_id)]
         try:
             await self._room_service.emit(
                 self.event_name,
                 payload,
-                Rooms.group(group_id),
+                rooms,
             )
         except RoomOperationError:
             logger.exception(
