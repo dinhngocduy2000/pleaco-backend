@@ -2,9 +2,12 @@
 
 from aio_pika import ExchangeType
 
+from app.common.middleware.logger import Logger
 from app.common.schemas.robot_status import RobotStatusEvent
 from app.external.queues.queue import RabbitMQClient, TopicMessage
 from app.external.queues.topics.base import Topic
+
+logger = Logger()
 
 
 class RobotStatusTopic(Topic):
@@ -19,9 +22,17 @@ class RobotStatusTopic(Topic):
     async def publish_status(self, event: RobotStatusEvent) -> str:
         if event.type != self.connection_routing_key:
             raise ValueError("RabbitMQ robot topic accepts connectivity events only")
-        return await self.publish(
+        queue_message_id = await self.publish(
             self.connection_routing_key, event, correlation_id=str(event.robot_id)
         )
+        logger.info(
+            msg=(
+                f"RabbitMQ published robot connectivity for robot {event.robot_id} "
+                f"message {event.message_id} sequence {event.sequence_number} "
+                f"broker message {queue_message_id}"
+            )
+        )
+        return queue_message_id
 
     async def start_consumer(self) -> None:
         subscription = await self.subscribe(
@@ -43,4 +54,11 @@ class RobotStatusTopic(Topic):
         event = RobotStatusEvent.model_validate(message.payload)
         if event.type != self.connection_routing_key:
             return
+        logger.info(
+            msg=(
+                f"RabbitMQ received robot connectivity for robot {event.robot_id} "
+                f"message {event.message_id} sequence {event.sequence_number} "
+                f"broker message {message.message_id}"
+            )
+        )
         await self._service.process_status_event(event)

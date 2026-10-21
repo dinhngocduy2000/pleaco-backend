@@ -24,18 +24,11 @@ class FakeRedis:
             raise ConnectionError("Redis unavailable")
         return self.values.get(key)
 
-    async def record_robot_heartbeat(self, robot_id, message_id, received_at, ttl):
+    async def set(self, key, value, expire=None):
         if self.fail:
             raise ConnectionError("Redis unavailable")
-        dedupe = f"robot:{robot_id}:heartbeat:{message_id}"
-        if dedupe in self.values:
-            return False
-        self.values[dedupe] = "1"
-        self.expirations[dedupe] = 86400
-        key = f"robot:{robot_id}:last_seen_at"
-        self.values[key] = received_at
-        self.expirations[key] = ttl
-        return True
+        self.values[key] = value
+        self.expirations[key] = expire
 
     async def update_robot_status_cache(
         self, robot_id, sequence, state, connection_status,
@@ -144,7 +137,10 @@ async def test_heartbeat_refreshes_only_redis_with_backend_time_and_ttl():
     assert datetime.fromisoformat(first).year != 2020
     assert registry._redis_client.expirations[f"robot:{robot_id}:last_seen_at"] == 60
     await service.process_heartbeat_event(message)
-    assert registry._redis_client.values[f"robot:{robot_id}:last_seen_at"] == first
+    assert datetime.fromisoformat(
+        registry._redis_client.values[f"robot:{robot_id}:last_seen_at"]
+    ) >= datetime.fromisoformat(first)
+    assert set(registry._redis_client.values) == {f"robot:{robot_id}:last_seen_at"}
     assert registry._bot_repository.update_calls == 0
     assert bot.last_seen_at is None
     assert bot.last_sequence_number == 1

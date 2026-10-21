@@ -51,6 +51,12 @@ class RobotStatusRealtimePublisher:
                 payload,
                 rooms,
             )
+            logger.info(
+                msg=(
+                    f"Socket.IO published {self.event_name} for robot {robot_id} "
+                    f"status {payload['connection_status']} to rooms {rooms}"
+                )
+            )
         except RoomOperationError:
             logger.exception(
                 msg=(
