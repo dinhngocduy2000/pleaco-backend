@@ -78,6 +78,12 @@ class RobotStatusMqttIngestion:
                 if heartbeat.robot_id != topic_robot_id:
                     logger.error(msg="Rejecting MQTT robot heartbeat with topic/payload robot_id mismatch")
                     return
+                logger.debug(
+                    msg=(
+                        f"MQTT received robot.heartbeat for robot {heartbeat.robot_id} "
+                        f"message {heartbeat.message_id}; processing directly"
+                    )
+                )
                 await self._bot_status_service.process_heartbeat_event(
                     RobotHeartbeatEvent(
                         message_id=heartbeat.message_id,
@@ -93,6 +99,12 @@ class RobotStatusMqttIngestion:
         if payload.robot_id != topic_robot_id:
             logger.error(msg="Rejecting MQTT robot status with topic/payload robot_id mismatch")
             return
+        logger.info(
+            msg=(
+                f"MQTT received {payload.event} for robot {payload.robot_id} "
+                f"message {payload.message_id} sequence {payload.sequence_number}"
+            )
+        )
         event = RobotStatusEvent(
             message_id=payload.message_id,
             type=(

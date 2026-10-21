@@ -37,29 +37,6 @@ class RedisClient:
         async with Redis(connection_pool=self.pool) as client:
             return await client.mget(keys)
 
-    async def record_robot_heartbeat(
-        self, robot_id, message_id, received_at: str, ttl: int
-    ) -> bool:
-        """Atomically deduplicate a heartbeat and refresh its live timestamp.
-
-        ``message_id`` is remembered for 24 hours. ``received_at`` is the
-        backend's UTC receive time, and ``ttl`` controls how long the live
-        timestamp remains available. Return ``False`` for a duplicate.
-        """
-        script = """
-        -- KEYS[1]: message ID; KEYS[2]: live last_seen_at.
-        if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
-        redis.call('SET', KEYS[1], '1', 'EX', ARGV[2])
-        redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[3])
-        return 1
-        """
-        return bool(await self.eval(
-            script, 2,
-            f"robot:{robot_id}:heartbeat:{message_id}",
-            f"robot:{robot_id}:last_seen_at",
-            received_at, 86400, ttl,
-        ))
-
     async def update_robot_status_cache(
         self, robot_id, sequence_number: int, state: str,
         connection_status: str, connection_changed: bool,
