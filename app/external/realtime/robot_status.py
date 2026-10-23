@@ -14,7 +14,8 @@ logger = Logger()
 class RobotStatusRealtimePublisher:
     """Publish robot connectivity to its persisted group and assigned map."""
 
-    event_name = "robot.status"
+    group_event_name = "robot.status"
+    map_event_name = "map.robot.status"
 
     def __init__(self, room_service: RoomService) -> None:
         self._room_service = room_service
@@ -42,19 +43,22 @@ class RobotStatusRealtimePublisher:
             operational_status=operational_status,
             last_seen_at=last_seen_at,
         ).model_dump(mode="json")
-        rooms: str | list[str] = Rooms.group(group_id)
-        if map_id is not None:
-            rooms = [rooms, Rooms.map(map_id)]
         try:
             await self._room_service.emit(
-                self.event_name,
+                self.group_event_name,
                 payload,
-                rooms,
+                Rooms.group(group_id),
             )
+            if map_id is not None:
+                await self._room_service.emit(
+                    self.map_event_name,
+                    {**payload, "map_id": str(map_id)},
+                    Rooms.map(map_id),
+                )
             logger.info(
                 msg=(
-                    f"Socket.IO published {self.event_name} for robot {robot_id} "
-                    f"status {payload['connection_status']} to rooms {rooms}"
+                    f"Socket.IO published robot status for robot {robot_id} "
+                    f"status {payload['connection_status']} to group {group_id}"
                 )
             )
         except RoomOperationError:
