@@ -53,7 +53,7 @@ async def test_publishes_json_safe_status_to_trusted_group_room():
 
 
 @pytest.mark.asyncio
-async def test_publishes_once_to_group_and_assigned_map():
+async def test_publishes_distinct_events_to_group_and_assigned_map():
     group_id = uuid4()
     map_id = uuid4()
     rooms = FakeRoomService()
@@ -69,10 +69,17 @@ async def test_publishes_once_to_group_and_assigned_map():
         last_seen_at=None,
     )
 
-    assert len(rooms.emissions) == 1
-    assert rooms.emissions[0][0] == "robot.status"
-    assert rooms.emissions[0][2] == [Rooms.group(group_id), Rooms.map(map_id)]
-    assert rooms.emissions[0][1]["connection_status"] == "OFFLINE"
+    assert len(rooms.emissions) == 2
+    group_event, group_payload, group_room = rooms.emissions[0]
+    map_event, map_payload, map_room = rooms.emissions[1]
+    assert group_event == "robot.status"
+    assert group_room == Rooms.group(group_id)
+    assert "map_id" not in group_payload
+    assert group_payload["connection_status"] == "OFFLINE"
+    assert map_event == "map.robot.status"
+    assert map_room == Rooms.map(map_id)
+    assert map_payload["map_id"] == str(map_id)
+    assert map_payload["connection_status"] == "OFFLINE"
 
 
 @pytest.mark.asyncio
