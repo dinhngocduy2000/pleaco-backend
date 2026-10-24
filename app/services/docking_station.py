@@ -11,6 +11,7 @@ from app.common.exceptions import (
     NotFoundException,
 )
 from app.common.middleware.logger import Logger
+from app.common.schemas.geometry import PolygonGeometry
 from app.common.schemas.map import (
     DockingStationInfo,
     DockingStationSaveItemDTO,
@@ -20,7 +21,10 @@ from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
 from app.models.robot import Robot
-from app.repository.docking_station import DockingStationRobotConflict
+from app.repository.docking_station import (
+    BoundaryPlacementInspection,
+    DockingStationRobotConflict,
+)
 from app.repository.registry import Registry
 
 logger = Logger()
@@ -172,7 +176,7 @@ class DockingStationService:
             )
         }
         repository = self.repo.docking_station_repo()
-        inspections = await repository.inspect_boundary_coverage(
+        inspections = await repository.inspect_boundary_placement(
             session=session,
             map_id=request.map_id,
             geometry_jsons=[item.geometry.model_dump_json() for item in request.data],
@@ -185,26 +189,46 @@ class DockingStationService:
             ctx=ctx,
         )
         # Validate in request order even though writes are grouped by action.
-        for index, (item, inspection) in enumerate(zip(request.data, inspections)):
-            self._validate_geometry(index, inspection)
+        for inspection in inspections:
+            index = inspection.item_index
+            item = request.data[index]
+            self._validate_geometry(inspection)
+            # Persist the translated polygon returned by PostGIS so clients see
+            # the same snapped geometry that was validated.
+            if inspection.snapped_geometry is not None:
+                item.geometry = PolygonGeometry.model_validate(
+                    inspection.snapped_geometry
+                )
             self._validate_robot(
                 index, item.robot_id, request.map_id, robots, conflicts
             )
 
     @staticmethod
-    def _validate_geometry(index: int, inspection: tuple[bool, bool, bool]) -> None:
-        boundary_exists, valid, covered = inspection
-        if not boundary_exists:
+    def _validate_geometry(inspection: BoundaryPlacementInspection) -> None:
+        index = inspection.item_index
+        if not inspection.boundary_exists:
             raise BadRequestException(
                 message="A map boundary is required before saving stations"
             )
-        if not valid:
+        if not inspection.geometry_valid:
             raise BadRequestException(
-                message=f"Station at index {index} must be a valid, nonempty polygon"
+                message=(
+                    f"Docking station {index + 1} must have a valid, non-empty shape"
+                )
             )
-        if not covered:
+        if not inspection.edge_aligned:
             raise BadRequestException(
-                message=f"Station at index {index} must be within the map boundary"
+                message=(
+                    f"Docking station {index + 1} must have one side touching or "
+                    "within 0.5 map units of the workspace edge"
+                )
+            )
+        if not inspection.fully_covered and not inspection.protrusion_allowed:
+            raise BadRequestException(
+                message=(
+                    f"Docking station {index + 1} must stay inside the workspace, "
+                    "except for up to 0.5 map units along the aligned edge"
+                )
             )
 
     @staticmethod

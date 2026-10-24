@@ -1,17 +1,16 @@
 import json
+from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Text,
-    case,
     column,
     delete,
     exists,
     func,
     insert,
-    literal,
     select,
-    union_all,
+    text,
     update,
     values,
 )
@@ -25,6 +24,19 @@ from app.models.docking_station import DockingStation
 from app.models.map_boundary import MapBoundary
 
 
+@dataclass(frozen=True)
+class BoundaryPlacementInspection:
+    """Validation results for one submitted docking-station geometry."""
+
+    item_index: int
+    boundary_exists: bool
+    geometry_valid: bool
+    fully_covered: bool
+    edge_aligned: bool
+    protrusion_allowed: bool
+    snapped_geometry: dict[str, object] | None = None
+
+
 class DockingStationRobotConflict(Exception):
     """The robot uniqueness constraint rejected a docking station assignment."""
 
@@ -34,51 +46,227 @@ class DockingStationRobotConflict(Exception):
 
 
 class DockingStationRepository:
+    EDGE_ALIGNMENT_TOLERANCE = 0.5
+
     @staticmethod
     def _geometry(geometry_json: str):
         return func.ST_SetSRID(func.ST_GeomFromGeoJSON(geometry_json), 0)
 
-    async def inspect_boundary_coverage(
+    async def inspect_boundary_placement(
         self,
         session: AsyncSession,
         map_id: UUID,
         geometry_jsons: list[str],
         ctx: AppContext,
-    ) -> list[tuple[bool, bool, bool]]:
+    ) -> list[BoundaryPlacementInspection]:
+        """Inspect station geometry validity, boundary alignment, and protrusion.
+
+        Results preserve request order and contain validation flags plus the
+        geometry translated to touch its closest qualifying boundary edge.
+        """
         if not geometry_jsons:
             return []
-        inputs = union_all(
-            *[
-                select(
-                    literal(index).label("item_index"),
-                    self._geometry(geometry_json).label("geometry"),
-                )
-                for index, geometry_json in enumerate(geometry_jsons)
-            ]
-        ).cte("input_stations")
-        geometry = inputs.c.geometry
-        valid = func.ST_IsValid(geometry, 0) & ~func.ST_IsEmpty(geometry)
-        boundary = (
-            select(MapBoundary.geometry)
-            .where(MapBoundary.map_id == map_id)
-            .scalar_subquery()
+        input_stations_cte = """
+            input_stations AS (
+                SELECT ordinality - 1 AS item_index,
+                       ST_SetSRID(ST_GeomFromGeoJSON(value::text), 0) AS geometry
+                FROM jsonb_array_elements(CAST(:geometries AS jsonb))
+                     WITH ORDINALITY AS inputs(value, ordinality)
+            )
+        """
+        boundary_cte = """
+            boundary AS (
+                SELECT geometry
+                FROM map_boundaries
+                WHERE map_id = :map_id
+            )
+        """
+        checked_cte = """
+            checked AS (
+                SELECT input.item_index,
+                       input.geometry,
+                       boundary.geometry AS boundary_geometry,
+                       ST_IsValid(input.geometry, 0)
+                           AND NOT ST_IsEmpty(input.geometry) AS valid
+                FROM input_stations AS input
+                LEFT JOIN boundary ON TRUE
+            )
+        """
+        edge_projections_cte = """
+            edge_projections AS (
+                -- Compare individual exterior segments; buffer distance alone would
+                -- also accept a station that only approaches a workspace corner.
+                SELECT checked.item_index,
+                       station_edge.path AS station_edge_path,
+                       workspace_edge.path AS workspace_edge_path,
+                       station_edge.geom AS station_edge_geometry,
+                       workspace_edge.geom AS workspace_edge_geometry,
+                       ST_Distance(station_edge.geom, workspace_edge.geom) AS gap,
+                       ST_ShortestLine(
+                           station_edge.geom, workspace_edge.geom
+                       ) AS translation_line,
+                       ST_Length(ST_Intersection(
+                           ST_Buffer(
+                               workspace_edge.geom,
+                               :tolerance,
+                               'endcap=flat join=mitre'
+                           ),
+                           station_edge.geom
+                       )) AS buffered_overlap_length,
+                       ST_LineLocatePoint(
+                           workspace_edge.geom,
+                           ST_ClosestPoint(
+                               workspace_edge.geom,
+                               ST_StartPoint(station_edge.geom)
+                           )
+                       ) AS projected_start,
+                       ST_LineLocatePoint(
+                           workspace_edge.geom,
+                           ST_ClosestPoint(
+                               workspace_edge.geom,
+                               ST_EndPoint(station_edge.geom)
+                           )
+                       ) AS projected_end
+                FROM checked
+                CROSS JOIN LATERAL ST_DumpSegments(
+                    ST_ExteriorRing(checked.geometry)
+                ) AS station_edge
+                CROSS JOIN LATERAL ST_DumpSegments(
+                    ST_Boundary(checked.boundary_geometry)
+                ) AS workspace_edge
+                WHERE checked.valid
+                  AND checked.boundary_geometry IS NOT NULL
+            )
+        """
+        edge_matches_cte = """
+            edge_matches AS (
+                -- Require both buffered contact and positive projected overlap.
+                -- The latter makes a point-only corner approach fail.
+                SELECT item_index,
+                       station_edge_path,
+                       workspace_edge_path,
+                       workspace_edge_geometry,
+                       gap,
+                       translation_line
+                FROM edge_projections
+                WHERE buffered_overlap_length > 0
+                  AND GREATEST(
+                      0,
+                      LEAST(1, GREATEST(projected_start, projected_end))
+                      - GREATEST(0, LEAST(projected_start, projected_end))
+                  ) > 0
+            )
+        """
+        best_edge_match_cte = """
+            best_edge_match AS (
+                -- Pick the closest qualifying pair deterministically so a station
+                -- near a corner is translated toward one specific boundary edge.
+                SELECT DISTINCT ON (item_index)
+                       item_index,
+                       workspace_edge_geometry,
+                       gap,
+                       translation_line
+                FROM edge_matches
+                ORDER BY item_index, gap, station_edge_path, workspace_edge_path
+            )
+        """
+        snapped_stations_cte = """
+            snapped_stations AS (
+                SELECT checked.*,
+                       best_edge_match.workspace_edge_geometry AS matched_edge,
+                       CASE
+                           WHEN best_edge_match.translation_line IS NOT NULL
+                           THEN ST_Translate(
+                               checked.geometry,
+                               ST_X(ST_EndPoint(best_edge_match.translation_line))
+                                   - ST_X(ST_StartPoint(best_edge_match.translation_line)),
+                               ST_Y(ST_EndPoint(best_edge_match.translation_line))
+                                   - ST_Y(ST_StartPoint(best_edge_match.translation_line))
+                           )
+                           ELSE checked.geometry
+                       END AS snapped_geometry
+                FROM checked
+                LEFT JOIN best_edge_match USING (item_index)
+            )
+        """
+        evaluated_cte = """
+            evaluated AS (
+                SELECT snapped_stations.*,
+                       CASE
+                           WHEN boundary_geometry IS NOT NULL AND valid
+                           THEN ST_Difference(snapped_geometry, boundary_geometry)
+                           ELSE ST_GeomFromText('POLYGON EMPTY', 0)
+                       END AS outside_geometry
+                FROM snapped_stations
+            )
+        """
+        cte_sql = ",\n".join(
+            (
+                input_stations_cte,
+                boundary_cte,
+                checked_cte,
+                edge_projections_cte,
+                edge_matches_cte,
+                best_edge_match_cte,
+                snapped_stations_cte,
+                evaluated_cte,
+            )
+        )
+        query = text(
+            f"""
+            -- Keep request indexes so validation errors point to the submitted item.
+            WITH {cte_sql}
+            SELECT item_index,
+                   boundary_geometry IS NOT NULL AS boundary_exists,
+                   valid,
+                   COALESCE(ST_Covers(boundary_geometry, snapped_geometry), FALSE)
+                       AS covered,
+                   matched_edge IS NOT NULL AS edge_aligned,
+                   -- The entire outside portion must fit beside one matched edge.
+                   EXISTS (
+                       SELECT 1
+                       WHERE matched_edge IS NOT NULL
+                         AND (
+                             ST_IsEmpty(outside_geometry)
+                             OR ST_Covers(
+                                 ST_Buffer(
+                                     matched_edge,
+                                     :tolerance,
+                                     'endcap=flat join=mitre'
+                                 ),
+                                 outside_geometry
+                             )
+                         )
+                   ) AS protrusion_allowed,
+                   ST_AsGeoJSON(snapped_geometry, 17, 0) AS snapped_geometry_json
+            FROM evaluated
+            ORDER BY item_index
+            """
         )
         rows = (
             await session.execute(
-                select(
-                    exists(select(1).where(MapBoundary.map_id == map_id)),
-                    valid,
-                    case(
-                        (
-                            valid,
-                            func.coalesce(func.ST_Covers(boundary, geometry), False),
-                        ),
-                        else_=False,
+                query,
+                {
+                    "map_id": map_id,
+                    "geometries": json.dumps(
+                        [json.loads(geometry_json) for geometry_json in geometry_jsons]
                     ),
-                ).order_by(inputs.c.item_index)
+                    "tolerance": self.EDGE_ALIGNMENT_TOLERANCE,
+                },
             )
         ).all()
-        return [(bool(row[0]), bool(row[1]), bool(row[2])) for row in rows]
+        return [
+            BoundaryPlacementInspection(
+                item_index=int(row.item_index),
+                boundary_exists=bool(row.boundary_exists),
+                geometry_valid=bool(row.valid),
+                fully_covered=bool(row.covered),
+                edge_aligned=bool(row.edge_aligned),
+                protrusion_allowed=bool(row.protrusion_allowed),
+                snapped_geometry=json.loads(row.snapped_geometry_json),
+            )
+            for row in rows
+        ]
 
     async def robots_with_other_map_stations(
         self,
