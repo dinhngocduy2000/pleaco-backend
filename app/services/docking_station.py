@@ -83,12 +83,17 @@ class DockingStationService:
         creates, edits, deletes = self._partition_actions(request.data, current)
         self._validate_edit_ids(edits, current)
         await self._validate_actions(session, request, group_id, ctx)
-        await self._delete_stations(session, request.map_id, deletes, ctx)
-        await self._release_changed_assignments(
-            session, request.map_id, edits, current, ctx
-        )
-        updated = await self._edit_stations(session, request.map_id, edits, ctx)
-        created = await self._create_stations(session, request.map_id, creates, ctx)
+        updated: list[tuple[int, DockingStationInfo]] = []
+        created: list[tuple[int, DockingStationInfo]] = []
+        if deletes:
+            await self._delete_stations(session, request.map_id, deletes, ctx)
+        if edits:
+            await self._release_changed_assignments(
+                session, request.map_id, edits, current, ctx
+            )
+            updated = await self._edit_stations(session, request.map_id, edits, ctx)
+        if creates:
+            created = await self._create_stations(session, request.map_id, creates, ctx)
         return [
             station
             for _, station in sorted([*updated, *created], key=lambda row: row[0])
