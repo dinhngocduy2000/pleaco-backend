@@ -197,6 +197,56 @@ async def test_creation_overlaps_nulls_and_serialization(station_db):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "station_geometry",
+    [
+        polygon(0, 2, 2, 3),
+        polygon(0.45, 2, 2, 3),
+        polygon(0.5, 2, 2, 3),
+        polygon(-0.45, 2, 2, 3),
+        polygon(-0.5, 2, 2, 3),
+    ],
+    ids=[
+        "touching",
+        "inside-tolerance",
+        "inside-at-limit",
+        "outside-tolerance",
+        "outside-at-limit",
+    ],
+)
+async def test_accepts_station_edge_within_tolerance(station_db, station_geometry):
+    db = station_db
+    saved = await save(db, [{"geometry": station_geometry}])
+    assert saved[0].geometry.model_dump(mode="json") == station_geometry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "station_geometry",
+    [
+        polygon(0.51, 2, 2, 3),
+        polygon(-0.51, 2, 2, 3),
+        polygon(10.25, 10.25, 11, 11),
+        polygon(-0.25, 2, 1, 11),
+    ],
+    ids=[
+        "inside-gap-too-large",
+        "outside-gap-too-large",
+        "corner-only",
+        "protrudes-past-matched-edge",
+    ],
+)
+async def test_rejects_station_without_valid_boundary_edge_alignment(
+    station_db, station_geometry
+):
+    db = station_db
+    with pytest.raises(BaseException) as error:
+        await save(db, [{"geometry": station_geometry}])
+    assert error.value.status_code == 400
+    assert "Docking station 1" in error.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "failure,code",
     [
         ("missing_map", 404),
@@ -355,7 +405,7 @@ async def test_synchronize_update_delete_clear_and_defaults(station_db):
         ],
     )
     result = await save(
-        db, [{"geometry": polygon(3, 3, 4, 4)}, {"id": first.id, "geometry": polygon()}]
+        db, [{"geometry": polygon(0, 3, 1, 4)}, {"id": first.id, "geometry": polygon()}]
     )
     assert result[1].id == first.id and result[1].created_at == first.created_at
     assert result[1].updated_at >= first.updated_at
@@ -363,7 +413,7 @@ async def test_synchronize_update_delete_clear_and_defaults(station_db):
         result[1].heading == DockingStationHeading.SOUTH and result[1].robot_id is None
     )
     assert result[0].id not in (first.id, omitted.id)
-    assert result[0].geometry.model_dump(mode="json") == polygon(3, 3, 4, 4)
+    assert result[0].geometry.model_dump(mode="json") == polygon(0, 3, 1, 4)
     assert await count(db) == 2
     async with db.engine.begin() as conn:
         await conn.execute(MapBoundary.__table__.delete())
@@ -457,7 +507,11 @@ async def test_failed_batch_preserves_existing_rows(station_db, failure):
             expected = 400
     with pytest.raises(BaseException) as error:
         await save(db, [{"geometry": polygon()}, bad])
-    assert error.value.status_code == expected and "index 1" in error.value.detail
+    assert error.value.status_code == expected
+    if failure == "geometry":
+        assert "Docking station 2" in error.value.detail
+    else:
+        assert "index 1" in error.value.detail
     async with db.engine.connect() as conn:
         assert (
             await conn.scalar(

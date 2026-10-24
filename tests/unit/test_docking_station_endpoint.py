@@ -17,13 +17,34 @@ from pydantic import ValidationError
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.handler.map import MapHandler
-from app.repository.docking_station import DockingStationRobotConflict
+from app.repository.docking_station import (
+    BoundaryPlacementInspection,
+    DockingStationRobotConflict,
+)
 from app.router.map import MapRouter
 from app.services.docking_station import DockingStationService
 
 
 def polygon():
     return {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 0]]]}
+
+
+def placement_inspection(
+    *,
+    boundary_exists=True,
+    geometry_valid=True,
+    fully_covered=True,
+    edge_aligned=True,
+    protrusion_allowed=True,
+):
+    return BoundaryPlacementInspection(
+        item_index=0,
+        boundary_exists=boundary_exists,
+        geometry_valid=geometry_valid,
+        fully_covered=fully_covered,
+        edge_aligned=edge_aligned,
+        protrusion_allowed=protrusion_allowed,
+    )
 
 
 def setup_service(role=GroupRole.ADMIN):
@@ -61,7 +82,7 @@ def setup_service(role=GroupRole.ADMIN):
         ]
 
     stations = SimpleNamespace(
-        inspect_boundary_coverage=AsyncMock(return_value=[(True, True, True)]),
+        inspect_boundary_placement=AsyncMock(return_value=[placement_inspection()]),
         robots_with_other_map_stations=AsyncMock(return_value=set()),
         save_many=AsyncMock(side_effect=save_many),
         list_for_map=AsyncMock(return_value={}),
@@ -146,6 +167,7 @@ async def test_roles(role):
         ("boundary", 400),
         ("topology", 400),
         ("coverage", 400),
+        ("edge", 400),
         ("duplicate", 409),
     ],
 )
@@ -160,11 +182,35 @@ async def test_validation_prevents_insertion(failure, code):
     if failure == "robot_map":
         bots.get_by_ids_and_group_for_update.return_value[0].map_id = uuid4()
     if failure == "boundary":
-        stations.inspect_boundary_coverage.return_value = [(False, True, False)]
+        stations.inspect_boundary_placement.return_value = [
+            placement_inspection(
+                boundary_exists=False,
+                fully_covered=False,
+                edge_aligned=False,
+                protrusion_allowed=False,
+            )
+        ]
     if failure == "topology":
-        stations.inspect_boundary_coverage.return_value = [(True, False, False)]
+        stations.inspect_boundary_placement.return_value = [
+            placement_inspection(
+                geometry_valid=False,
+                fully_covered=False,
+                edge_aligned=False,
+                protrusion_allowed=False,
+            )
+        ]
     if failure == "coverage":
-        stations.inspect_boundary_coverage.return_value = [(True, True, False)]
+        stations.inspect_boundary_placement.return_value = [
+            placement_inspection(
+                fully_covered=False,
+                edge_aligned=True,
+                protrusion_allowed=False,
+            )
+        ]
+    if failure == "edge":
+        stations.inspect_boundary_placement.return_value = [
+            placement_inspection(edge_aligned=False, protrusion_allowed=False)
+        ]
     if failure == "duplicate":
         stations.robots_with_other_map_stations.return_value = {robot_id}
     with pytest.raises(BaseException) as error:
