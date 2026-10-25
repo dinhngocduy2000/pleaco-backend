@@ -16,7 +16,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.common.context import AppContext
-from app.common.enum.context_actions import SAVE_DOCKING_STATIONS
+from app.common.enum.context_actions import (
+    ASSIGN_DOCKING_STATION,
+    SAVE_DOCKING_STATIONS,
+)
 from app.common.enum.docking_station import DockingStationHeading
 from app.common.enum.environment_zone import EnvironmentZoneType
 from app.common.enum.user_roles import GroupRole
@@ -597,3 +600,45 @@ async def test_batch_query_count(station_db, size):
         assert len(statements) == 8
     finally:
         event.remove(db.engine.sync_engine, "before_cursor_execute", capture)
+
+
+@pytest.mark.asyncio
+async def test_robot_assignment_is_idempotent_and_serializes_concurrent_conflicts(
+    station_db,
+):
+    db = station_db
+    created = await save(
+        db,
+        [
+            {"geometry": polygon()},
+            {"geometry": polygon(left=3, right=5)},
+        ],
+    )
+
+    async def assign(station_id):
+        await db.service.assign_robot(
+            map_id=db.map_id,
+            station_id=station_id,
+            robot_id=db.robot_id,
+            group_id=db.credential.active_group_id,
+            credential=db.credential,
+            ctx=AppContext(
+                trace_id=uuid4(),
+                actor=db.credential.id,
+                action=ASSIGN_DOCKING_STATION,
+            ),
+        )
+
+    results = await asyncio.gather(
+        *(assign(station.id) for station in created), return_exceptions=True
+    )
+    assert sum(result is None for result in results) == 1
+    conflicts = [result for result in results if isinstance(result, BaseException)]
+    assert len(conflicts) == 1
+    assert conflicts[0].status_code == 409
+
+    async with db.engine.connect() as connection:
+        assigned_station_id = await connection.scalar(
+            select(DockingStation.id).where(DockingStation.robot_id == db.robot_id)
+        )
+    await assign(assigned_station_id)

@@ -32,7 +32,7 @@ and requires the payload's robot ID to match the topic ID before routing it.
 | --- | --- | --- | --- |
 | `robot.online` | MQTT → RabbitMQ connectivity consumer → status service | On an accepted transition, persist `ONLINE` and initialize Redis freshness | `robot.status` |
 | `robot.offline` | MQTT → RabbitMQ connectivity consumer → status service | On an accepted transition, persist `OFFLINE`, snapshot the latest Redis heartbeat if available, and clear live freshness | `robot.status` |
-| `robot.heartbeat` | MQTT → status service directly | Deduplicate and refresh Redis `last_seen_at` for a registered online robot; no PostgreSQL write | None |
+| `robot.heartbeat` | MQTT → status service directly | Refresh Redis `last_seen_at` for a registered online robot; no PostgreSQL write | None |
 | `robot.status.updated` | MQTT → status service directly | Persist accepted operational changes and ordering; update the Redis status cache | None |
 
 RabbitMQ uses the `pleco.robot.events` topic exchange, the
@@ -89,3 +89,6 @@ joining `map:{map_id}`. `map.unsubscribe` removes only the map membership.
 
 For the detailed room authorization flow, see
 [Socket.IO Map Rooms: Data Flow](SOCKETIO_MAP_ROOMS_DATA_FLOW.md).
+
+For the proposed startup and periodic heartbeat timeout handling, see
+[Robot Heartbeat Timeout Reconciliation](ROBOT_HEARTBEAT_STALE_RECONCILIATION.md).
