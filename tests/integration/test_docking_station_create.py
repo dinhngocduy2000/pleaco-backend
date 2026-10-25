@@ -4,6 +4,7 @@ Supply MAP_BOUNDARY_TEST_DATABASE_URL and disable dotenv loading before imports.
 """
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 from uuid import uuid4
@@ -597,3 +598,91 @@ async def test_batch_query_count(station_db, size):
         assert len(statements) == 8
     finally:
         event.remove(db.engine.sync_engine, "before_cursor_execute", capture)
+
+
+async def assign_robot(db, station_id, robot_id):
+    await db.service.assign_robot(
+        map_id=db.map_id,
+        docking_id=station_id,
+        robot_id=robot_id,
+        group_id=db.credential.active_group_id,
+        credential=db.credential,
+        ctx=AppContext(
+            trace_id=uuid4(), actor=db.credential.id, action=SAVE_DOCKING_STATIONS
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_assignment_preserves_layout_and_updates_detail(station_db):
+    db = station_db
+    station = await create(db)
+    await assign_robot(db, station.id, db.robot_id)
+    async with AsyncSession(db.engine) as session:
+        row = await session.get(DockingStation, station.id)
+        assert row.robot_id == db.robot_id
+        assert row.heading == station.heading
+        assert row.created_at == station.created_at
+        geometry = await session.scalar(
+            select(func.ST_AsGeoJSON(DockingStation.geometry)).where(
+                DockingStation.id == station.id
+            )
+        )
+        assert json.loads(geometry) == station.geometry.model_dump(mode="json")
+        detail = await db.service.repo.map_repo().get_detail_by_id_and_group(
+            session=session,
+            map_id=db.map_id,
+            group_id=db.credential.active_group_id,
+            ctx=AppContext(
+                trace_id=uuid4(), actor=db.credential.id, action=SAVE_DOCKING_STATIONS
+            ),
+        )
+        assert detail["docking_stations"][0]["robot_id"] == db.robot_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "same_station, same_robot", [(True, True), (True, False), (False, True)]
+)
+async def test_concurrent_robot_assignment_has_one_winner(
+    station_db, same_station, same_robot
+):
+    db = station_db
+    stations = await save(db, [{"geometry": polygon()}, {"geometry": polygon()}])
+    first_id = stations[0].id
+    second_id = first_id if same_station else stations[1].id
+    second_robot_id = db.robot_id
+    if not same_robot:
+        second_robot_id = uuid4()
+        async with db.engine.begin() as connection:
+            await connection.execute(
+                Robot.__table__.insert().values(
+                    id=second_robot_id,
+                    group_id=db.credential.active_group_id,
+                    map_id=db.map_id,
+                    name="Second robot",
+                    serial_num="SECOND-STATION",
+                    model="STANDARD",
+                    connection_status="OFFLINE",
+                    operational_status="IDLE",
+                )
+            )
+    results = await asyncio.gather(
+        assign_robot(db, first_id, db.robot_id),
+        assign_robot(db, second_id, second_robot_id),
+        return_exceptions=True,
+    )
+    assert sum(result is None for result in results) == 1
+    failures = [result for result in results if result is not None]
+    assert len(failures) == 1
+    assert isinstance(failures[0], BaseException)
+    assert failures[0].status_code == 409
+    async with db.engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                select(func.count())
+                .select_from(DockingStation)
+                .where(DockingStation.robot_id.in_([db.robot_id, second_robot_id]))
+            )
+            == 1
+        )
