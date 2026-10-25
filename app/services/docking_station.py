@@ -37,6 +37,65 @@ class DockingStationService:
         self.permission_service = permission_service
 
     @require_permission(GroupRole.ADMIN)
+    async def assign_robot(
+        self,
+        map_id: UUID,
+        docking_id: UUID,
+        robot_id: UUID,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> None:
+        self._validate_active_group(group_id, credential)
+
+        async def assign(session: AsyncSession) -> None:
+            # Match layout saves: lock the map before its robots.
+            await self._lock_map(session, map_id, group_id, ctx)
+            repository = self.repo.docking_station_repo()
+            station = await repository.get_for_map(
+                session=session, map_id=map_id, docking_id=docking_id, ctx=ctx
+            )
+            if station is None:
+                raise NotFoundException(message="Docking station not found")
+            if station.robot_id is not None:
+                raise BadRequestException(
+                    message="Docking station already has a robot assigned",
+                    status_code=409,
+                )
+            robot = await self.repo.bot_repo().get_by_id_and_group_for_update(
+                session=session, bot_id=robot_id, group_id=group_id, ctx=ctx
+            )
+            if robot is None:
+                raise NotFoundException(message="Robot not found")
+            if robot.map_id != map_id:
+                raise BadRequestException(message="Robot must be assigned to this map")
+            if await repository.robot_has_station(
+                session=session, robot_id=robot_id, ctx=ctx
+            ):
+                raise BadRequestException(
+                    message="Robot already has a docking station", status_code=409
+                )
+            try:
+                assigned = await repository.assign_robot_if_empty(
+                    session=session,
+                    map_id=map_id,
+                    docking_id=docking_id,
+                    robot_id=robot_id,
+                    ctx=ctx,
+                )
+            except DockingStationRobotConflict as error:
+                raise BadRequestException(
+                    message="Robot already has a docking station", status_code=409
+                ) from error
+            if not assigned:
+                raise BadRequestException(
+                    message="Docking station changed; refresh the map and try again",
+                    status_code=409,
+                )
+
+        await self.repo.transaction_wrapper(assign)
+
+    @require_permission(GroupRole.ADMIN)
     async def save_docking_stations(
         self,
         station_save: DockingStationsSaveDTO,

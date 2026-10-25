@@ -114,6 +114,12 @@ class MapBoundaryInfo(BaseModel):
     updated_at: datetime
 
 
+class DockingStationAssignRobotDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    robot_id: UUID
+
+
 class DockingStationSaveItemDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

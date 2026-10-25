@@ -48,6 +48,56 @@ class DockingStationRobotConflict(Exception):
 class DockingStationRepository:
     EDGE_ALIGNMENT_TOLERANCE = 0.5
 
+    async def get_for_map(
+        self, session: AsyncSession, map_id: UUID, docking_id: UUID, ctx: AppContext
+    ) -> DockingStation | None:
+        return await session.scalar(
+            select(DockingStation).where(
+                DockingStation.id == docking_id, DockingStation.map_id == map_id
+            )
+        )
+
+    async def robot_has_station(
+        self, session: AsyncSession, robot_id: UUID, ctx: AppContext
+    ) -> bool:
+        return bool(
+            await session.scalar(
+                select(exists().where(DockingStation.robot_id == robot_id))
+            )
+        )
+
+    async def assign_robot_if_empty(
+        self,
+        session: AsyncSession,
+        map_id: UUID,
+        docking_id: UUID,
+        robot_id: UUID,
+        ctx: AppContext,
+    ) -> bool:
+        """Assign without overwriting an occupied station, preserving its layout."""
+        try:
+            async with session.begin_nested():
+                assigned_id = await session.scalar(
+                    update(DockingStation)
+                    .where(
+                        DockingStation.id == docking_id,
+                        DockingStation.map_id == map_id,
+                        DockingStation.robot_id.is_(None),
+                    )
+                    .values(robot_id=robot_id, updated_at=func.now())
+                    .returning(DockingStation.id)
+                )
+            return assigned_id is not None
+        except IntegrityError as error:
+            cause = error.orig.__cause__
+            if (
+                getattr(cause, "sqlstate", None) == "23505"
+                and getattr(cause, "constraint_name", None)
+                == "uq_docking_station_robot_id"
+            ):
+                raise DockingStationRobotConflict() from error
+            raise
+
     @staticmethod
     def _geometry(geometry_json: str):
         return func.ST_SetSRID(func.ST_GeomFromGeoJSON(geometry_json), 0)
