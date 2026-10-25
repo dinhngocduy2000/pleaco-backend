@@ -64,6 +64,76 @@ class DockingStationService:
         )
         return results
 
+    @require_permission(GroupRole.ADMIN)
+    async def assign_robot(
+        self,
+        map_id: UUID,
+        station_id: UUID,
+        robot_id: UUID,
+        group_id: UUID | None,
+        credential: Credential,
+        ctx: AppContext,
+    ) -> None:
+        """Attach a robot already assigned to this map to one docking station."""
+        self._validate_active_group(group_id, credential)
+
+        async def assign(session: AsyncSession) -> None:
+            map_record = await self.repo.map_repo().get_by_id_and_group_for_update(
+                session=session,
+                map_id=map_id,
+                group_id=group_id,
+                ctx=ctx,
+            )
+            if map_record is None:
+                raise NotFoundException(message="Map not found")
+
+            station_repository = self.repo.docking_station_repo()
+            station = await station_repository.get_by_id_and_map_for_update(
+                session=session,
+                station_id=station_id,
+                map_id=map_id,
+                ctx=ctx,
+            )
+            if station is None:
+                raise NotFoundException(message="Docking station not found")
+
+            robots = await self.repo.bot_repo().get_by_ids_and_group_for_update(
+                session=session,
+                bot_ids=[robot_id],
+                group_id=group_id,
+                ctx=ctx,
+            )
+            robot = next((item for item in robots if item.id == robot_id), None)
+            if robot is None or robot.map_id != map_id:
+                raise NotFoundException(message="Robot not found on this map")
+
+            if station.robot_id == robot_id:
+                return
+            if station.robot_id is not None:
+                raise BadRequestException(
+                    message="Docking station is already assigned to another robot",
+                    status_code=409,
+                )
+
+            try:
+                await station_repository.assign_robot(
+                    session=session,
+                    station=station,
+                    robot_id=robot_id,
+                    ctx=ctx,
+                )
+            except DockingStationRobotConflict:
+                raise BadRequestException(
+                    message="Robot is already assigned to another docking station",
+                    status_code=409,
+                ) from None
+
+        await self.repo.transaction_wrapper(assign)
+        logger.info(
+            msg=f"Assigned robot {robot_id} to docking station {station_id}",
+            context=ctx,
+        )
+
     @staticmethod
     def _validate_active_group(group_id: UUID | None, credential: Credential) -> None:
         if group_id is None or group_id != credential.active_group_id:

@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
+    ASSIGN_DOCKING_STATION,
     CREATE_BOT,
     SAVE_DOCKING_STATIONS,
     CREATE_ENVIRONMENT_ZONES,
@@ -42,6 +43,7 @@ ROLE_HIERACHY = [
 
 ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
+        ASSIGN_DOCKING_STATION,
         SAVE_DOCKING_STATIONS,
         CREATE_ENVIRONMENT_ZONES,
         SAVE_MAP_BOUNDARY,
@@ -64,6 +66,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
         LIST_GROUP_MEMBERS,
     },
     GroupRole.ADMIN: {
+        ASSIGN_DOCKING_STATION,
         SAVE_DOCKING_STATIONS,
         CREATE_ENVIRONMENT_ZONES,
         SAVE_MAP_BOUNDARY,

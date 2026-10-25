@@ -14,6 +14,24 @@ class MapRouter:
         self.router = APIRouter(prefix="", tags=["Maps"])
         self.handler = handler
         self.router.add_api_route(
+            path="/{map_id}/docking/{docking_id}/",
+            endpoint=self.handler.assign_docking_station_robot,
+            methods=["PUT"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            summary="Assign a robot to a map docking station",
+            description=(
+                "Owners and Admins may assign a robot already assigned to the active-group "
+                "map to an unassigned docking station. Repeating the same assignment succeeds."
+            ),
+            responses={
+                401: {"description": "Authentication required"},
+                403: {"description": "Active-group Owner or Admin permission required"},
+                404: {"description": "Map, station, or robot not found in the active group"},
+                409: {"description": "Station or robot is already assigned"},
+                422: {"description": "A non-null robot_id UUID is required"},
+            },
+        )
+        self.router.add_api_route(
             path="/layouts",
             endpoint=self.handler.save_layout,
             methods=["POST"],

@@ -52,6 +52,46 @@ class DockingStationRepository:
     def _geometry(geometry_json: str):
         return func.ST_SetSRID(func.ST_GeomFromGeoJSON(geometry_json), 0)
 
+    async def get_by_id_and_map_for_update(
+        self,
+        session: AsyncSession,
+        station_id: UUID,
+        map_id: UUID,
+        ctx: AppContext,
+    ) -> DockingStation | None:
+        """Load a station belonging to a locked map and lock its assignment row."""
+        result = await session.execute(
+            select(DockingStation)
+            .where(DockingStation.id == station_id, DockingStation.map_id == map_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def assign_robot(
+        self,
+        session: AsyncSession,
+        station: DockingStation,
+        robot_id: UUID,
+        ctx: AppContext,
+    ) -> None:
+        """Assign a robot, translating the database uniqueness race to a domain conflict."""
+        try:
+            async with session.begin_nested():
+                await session.execute(
+                    update(DockingStation)
+                    .where(DockingStation.id == station.id)
+                    .values(robot_id=robot_id, updated_at=func.now())
+                )
+        except IntegrityError as error:
+            cause = error.orig.__cause__
+            if (
+                getattr(cause, "sqlstate", None) != "23505"
+                or getattr(cause, "constraint_name", None)
+                != "uq_docking_station_robot_id"
+            ):
+                raise
+            raise DockingStationRobotConflict() from error
+
     async def inspect_boundary_placement(
         self,
         session: AsyncSession,
