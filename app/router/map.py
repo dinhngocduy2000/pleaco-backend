@@ -14,26 +14,6 @@ class MapRouter:
         self.router = APIRouter(prefix="", tags=["Maps"])
         self.handler = handler
         self.router.add_api_route(
-            path="/{map_id}/docking/{docking_id}/",
-            endpoint=self.handler.assign_docking_station_robot,
-            methods=["PUT"],
-            status_code=status.HTTP_204_NO_CONTENT,
-            summary="Assign a robot to an empty docking station",
-            description=(
-                "Owners and Admins may assign an active-group map's robot to an "
-                "empty station on that map. Occupied stations, including retries "
-                "with the same robot, and robots assigned elsewhere are rejected."
-            ),
-            responses={
-                400: {"description": "Robot must be assigned to this map"},
-                401: {"description": "Authentication required"},
-                403: {"description": "Active-group Owner or Admin permission required"},
-                404: {"description": "Map, station, or robot not found in scope"},
-                409: {"description": "Station occupied or robot already assigned"},
-                422: {"description": "Invalid request fields"},
-            },
-        )
-        self.router.add_api_route(
             path="/layouts",
             endpoint=self.handler.save_layout,
             methods=["POST"],

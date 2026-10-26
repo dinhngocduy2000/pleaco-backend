@@ -55,26 +55,6 @@ class MapService:
         self.environment_zones_service = environment_zones_service
         self.docking_station_service = docking_station_service
 
-    async def assign_docking_station_robot(
-        self,
-        map_id: UUID,
-        docking_id: UUID,
-        robot_id: UUID,
-        group_id: UUID | None,
-        credential: Credential,
-        ctx: AppContext,
-    ) -> None:
-        if self.docking_station_service is None:
-            raise RuntimeError("Docking station service is not configured")
-        await self.docking_station_service.assign_robot(
-            map_id=map_id,
-            docking_id=docking_id,
-            robot_id=robot_id,
-            group_id=group_id,
-            credential=credential,
-            ctx=ctx,
-        )
-
     @require_permission(GroupRole.GUEST)
     async def ensure_realtime_access(
         self,
