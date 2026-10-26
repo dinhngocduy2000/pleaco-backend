@@ -5,7 +5,6 @@ from fastapi import Depends, Query
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_MAP,
-    SAVE_DOCKING_STATIONS,
     LIST_MAPS,
     SAVE_MAP_LAYOUT,
     UPDATE_MAP,
@@ -14,7 +13,6 @@ from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.common.schemas.map import (
-    DockingStationAssignRobotDTO,
     MapCreateDTO,
     MapDetailInfo,
     MapInfo,
@@ -30,26 +28,6 @@ from app.services.map import MapService
 class MapHandler:
     def __init__(self, service: MapService) -> None:
         self.service = service
-
-    @exception_handler
-    async def assign_docking_station_robot(
-        self,
-        map_id: UUID,
-        docking_id: UUID,
-        assignment: DockingStationAssignRobotDTO,
-        credential: Credential = Depends(AuthMiddleware.auth_middleware),
-    ) -> None:
-        ctx = AppContext(
-            trace_id=uuid4(), action=SAVE_DOCKING_STATIONS, actor=credential.id
-        )
-        await self.service.assign_docking_station_robot(
-            map_id=map_id,
-            docking_id=docking_id,
-            robot_id=assignment.robot_id,
-            group_id=credential.active_group_id,
-            credential=credential,
-            ctx=ctx,
-        )
 
     @exception_handler
     async def save_layout(
