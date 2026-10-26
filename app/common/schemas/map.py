@@ -149,6 +149,12 @@ class DockingStationsSaveDTO(BaseModel):
         return self
 
 
+class DockingStationRobotAssignmentDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    robot_id: UUID
+
+
 class DockingStationInfo(BaseModel):
     id: UUID
     map_id: UUID

@@ -6,6 +6,7 @@ from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_BOT,
     SAVE_DOCKING_STATIONS,
+    ASSIGN_DOCKING_STATION_ROBOT,
     CREATE_ENVIRONMENT_ZONES,
     CREATE_MAP,
     UPDATE_MAP,
@@ -43,6 +44,7 @@ ROLE_HIERACHY = [
 ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     GroupRole.OWNER: {
         SAVE_DOCKING_STATIONS,
+        ASSIGN_DOCKING_STATION_ROBOT,
         CREATE_ENVIRONMENT_ZONES,
         SAVE_MAP_BOUNDARY,
         SAVE_MAP_LAYOUT,
@@ -65,6 +67,7 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
     },
     GroupRole.ADMIN: {
         SAVE_DOCKING_STATIONS,
+        ASSIGN_DOCKING_STATION_ROBOT,
         CREATE_ENVIRONMENT_ZONES,
         SAVE_MAP_BOUNDARY,
         SAVE_MAP_LAYOUT,

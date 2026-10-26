@@ -461,3 +461,44 @@ class DockingStationRepository:
         for row in by_id.values():
             row["geometry"] = json.loads(row["geometry"])
         return [by_id[station_id] for station_id in ids]
+
+    async def get_by_id_and_map_for_update(
+        self, session: AsyncSession, station_id: UUID, map_id: UUID
+    ) -> DockingStation | None:
+        result = await session.execute(
+            select(DockingStation)
+            .where(DockingStation.id == station_id, DockingStation.map_id == map_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def assign_robot(
+        self, session: AsyncSession, station: DockingStation, robot_id: UUID
+    ) -> None:
+        station.robot_id = robot_id
+        station.updated_at = func.now()
+        try:
+            await session.flush()
+        except IntegrityError as error:
+            cause = error.orig.__cause__
+            if (
+                getattr(cause, "sqlstate", None) == "23505"
+                and getattr(cause, "constraint_name", None)
+                == "uq_docking_station_robot_id"
+            ):
+                raise DockingStationRobotConflict() from error
+            raise
+
+    async def is_robot_assigned(
+        self, session: AsyncSession, robot_id: UUID, station_id: UUID
+    ) -> bool:
+        return bool(
+            await session.scalar(
+                select(
+                    exists().where(
+                        DockingStation.robot_id == robot_id,
+                        DockingStation.id != station_id,
+                    )
+                )
+            )
+        )
