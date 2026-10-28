@@ -3,8 +3,10 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +27,8 @@ from app.core.config import settings
 logger = Logger()
 
 JsonPayload = Mapping[str, Any] | BaseModel
+RETRY_COUNT_HEADER = "x-retry-count"
+ORIGINAL_ROUTING_KEY_HEADER = "x-original-routing-key"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,10 +133,15 @@ class RabbitMQClient:
             delivery_mode=DeliveryMode.PERSISTENT,
             message_id=message_id,
             correlation_id=correlation_id,
-            headers=dict(headers or {}),
+            headers={RETRY_COUNT_HEADER: 0, **dict(headers or {})},
             timestamp=datetime.now(timezone.utc),
         )
-        await exchange.publish(message, routing_key=routing_key, mandatory=True)
+        await exchange.publish(
+            message,
+            routing_key=routing_key,
+            mandatory=True,
+            timeout=settings.RABBITMQ_PUBLISH_TIMEOUT,
+        )
         return message_id
 
     async def subscribe(
@@ -145,54 +154,160 @@ class RabbitMQClient:
         prefetch_count: int = 10,
         durable: bool = True,
         requeue_on_error: bool = True,
+        max_retries: int | None = None,
     ) -> TopicSubscription:
         """Bind a durable queue to a topic exchange and start consuming it.
 
         A consumer gets its own channel, preventing its prefetch policy from
-        affecting other consumers. Successful handlers acknowledge messages;
-        handler errors are negatively acknowledged for retry by default.
+        affecting other consumers. Successful handlers acknowledge messages.
+        Handler failures are republished to a delayed retry queue up to
+        ``max_retries`` times. Broker policies must configure its TTL/return
+        route and the source queue's DLX before this consumer starts.
         """
+        retry_limit = settings.RABBITMQ_MAX_RETRIES if max_retries is None else max_retries
+        if type(retry_limit) is not int or retry_limit < 0:
+            raise ValueError("max_retries must be a non-negative integer")
         channel = await self._new_channel(prefetch_count=prefetch_count)
-        exchange = await channel.declare_exchange(
-            exchange_name,
-            ExchangeType.TOPIC,
-            durable=True,
+
+        consume = partial(
+            self._consume_message,
+            queue_name=queue_name,
+            handler=handler,
+            retry_limit=retry_limit,
+            requeue_on_error=requeue_on_error,
         )
-        queue = await channel.declare_queue(queue_name, durable=durable)
-        await queue.bind(exchange, routing_key=routing_key)
 
-        async def consume(message: AbstractIncomingMessage) -> None:
-            try:
-                decoded_payload = self._deserialize_payload(message.body)
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-                logger.error(msg="Rejecting malformed RabbitMQ JSON message")
-                await message.reject(requeue=False)
-                return
-
-            topic_message = TopicMessage(
-                payload=decoded_payload,
-                routing_key=message.routing_key,
-                headers=message.headers or {},
-                message_id=message.message_id,
-                correlation_id=message.correlation_id,
+        try:
+            exchange, dead_exchange, dead_queue, queue = await self._declare_subscription_topology(
+                channel, exchange_name, queue_name, durable=durable,
             )
-            try:
-                await handler(topic_message)
-            except Exception:
-                logger.exception(
-                    msg=(
-                        "RabbitMQ topic handler failed "
-                        f"for routing key '{message.routing_key}'"
-                    )
-                )
-                await message.nack(requeue=requeue_on_error)
-                return
-            await message.ack()
-
-        consumer_tag = await queue.consume(consume, no_ack=False)
+            await dead_queue.bind(dead_exchange, routing_key="")
+            await queue.bind(exchange, routing_key=routing_key)
+            consumer_tag = await queue.consume(consume, no_ack=False)
+        except BaseException:
+            await channel.close()
+            raise
         subscription = TopicSubscription(queue, consumer_tag, channel)
         self._subscriptions.append(subscription)
         return subscription
+
+    async def _declare_subscription_topology(
+        self,
+        channel: AbstractChannel,
+        exchange_name: str,
+        queue_name: str,
+        *,
+        durable: bool,
+    ) -> tuple[AbstractExchange, AbstractExchange, AbstractQueue, AbstractQueue]:
+        """Declare subscription resources and return those needed for binding."""
+        # Settle every declaration before binding or closing the channel on
+        # failure, so no sibling operation is left running during cleanup.
+        declarations = await asyncio.gather(
+            channel.declare_exchange(exchange_name, ExchangeType.TOPIC, durable=True),
+            channel.declare_exchange(f"{queue_name}.dlx", ExchangeType.FANOUT, durable=True),
+            channel.declare_queue(f"{queue_name}.dlq", durable=True),
+            channel.declare_queue(f"{queue_name}.retry", durable=True),
+            # Policies supply DLX arguments without changing the existing
+            # source declaration or requiring backlog deletion.
+            channel.declare_queue(queue_name, durable=durable),
+            return_exceptions=True,
+        )
+        for declaration in declarations:
+            if isinstance(declaration, BaseException):
+                raise declaration
+        exchange, dead_exchange, dead_queue, _retry_queue, queue = declarations
+        return exchange, dead_exchange, dead_queue, queue
+
+    async def _consume_message(
+        self,
+        message: AbstractIncomingMessage,
+        *,
+        queue_name: str,
+        handler: MessageHandler,
+        retry_limit: int,
+        requeue_on_error: bool,
+    ) -> None:
+        """Decode and settle one delivery using the subscription's retry policy."""
+        headers = dict(message.headers or {})
+        retry_count = headers.get(RETRY_COUNT_HEADER, 0)
+        context = f"queue='{queue_name}' message_id='{message.message_id}'"
+        if type(retry_count) is not int or retry_count < 0:
+            logger.error(msg=f"Dead-lettering invalid RabbitMQ retry count {context}")
+            await message.reject(requeue=False)
+            return
+        context += f" retry_count={retry_count}"
+        original_key = headers.get(ORIGINAL_ROUTING_KEY_HEADER, message.routing_key)
+        if not isinstance(original_key, str):
+            logger.error(msg=f"Dead-lettering invalid RabbitMQ routing header {context}")
+            await message.reject(requeue=False)
+            return
+        try:
+            decoded_payload = self._deserialize_payload(message.body)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            logger.error(msg=f"Dead-lettering malformed RabbitMQ JSON {context}")
+            await message.reject(requeue=False)
+            return
+
+        topic_message = TopicMessage(
+            payload=decoded_payload,
+            routing_key=original_key,
+            headers=headers,
+            message_id=message.message_id,
+            correlation_id=message.correlation_id,
+        )
+        try:
+            await handler(topic_message)
+        except Exception as error:
+            # Exception text/tracebacks can contain payload values (e.g. OTPs).
+            logger.warning(
+                msg=f"RabbitMQ handler failed {context} error_type={type(error).__name__}"
+            )
+            if not requeue_on_error or retry_count >= retry_limit:
+                logger.error(msg=f"Dead-lettering failed RabbitMQ message {context}")
+                await message.reject(requeue=False)
+                return
+            retry_message = copy(message)
+            retry_message.headers = {
+                key: value
+                for key, value in headers.items()
+                if key not in ("CC", "BCC")
+            }
+            retry_message.headers[RETRY_COUNT_HEADER] = retry_count + 1
+            retry_message.headers[ORIGINAL_ROUTING_KEY_HEADER] = original_key
+            retry_message.message_id = message.message_id or str(uuid4())
+            try:
+                publisher = await self._publisher_channel_for_use()
+                await publisher.default_exchange.publish(
+                    retry_message,
+                    routing_key=f"{queue_name}.retry",
+                    mandatory=True,
+                    timeout=settings.RABBITMQ_PUBLISH_TIMEOUT,
+                )
+            except Exception as publish_error:
+                logger.error(
+                    msg=(
+                        f"RabbitMQ retry publish failed; retaining original {context} "
+                        f"error_type={type(publish_error).__name__}"
+                    )
+                )
+                try:
+                    if not message.channel.is_closed:
+                        await message.nack(requeue=True)
+                except aio_pika.exceptions.ChannelInvalidStateError:
+                    # The original delivery belongs to a closed channel and
+                    # is recovered by RabbitMQ, even after robust reconnect.
+                    pass
+                return
+            # Keep acknowledgement errors out of publish-error recovery.
+            await message.ack()
+            logger.info(
+                msg=(
+                    f"RabbitMQ retry scheduled queue='{queue_name}' "
+                    f"message_id='{retry_message.message_id}' retry_count={retry_count + 1}"
+                )
+            )
+            return
+        await message.ack()
 
     async def _declare_exchange(self, exchange_name: str) -> AbstractExchange:
         """Idempotently declare and return a durable topic exchange for publishing.
@@ -230,9 +345,15 @@ class RabbitMQClient:
         """
         await self.connect()
         assert self._connection is not None
-        channel = await self._connection.channel(publisher_confirms=True)
-        if prefetch_count is not None:
-            await channel.set_qos(prefetch_count=prefetch_count)
+        channel = await self._connection.channel(
+            publisher_confirms=True, on_return_raises=True,
+        )
+        try:
+            if prefetch_count is not None:
+                await channel.set_qos(prefetch_count=prefetch_count)
+        except BaseException:
+            await channel.close()
+            raise
         return channel
 
     @staticmethod

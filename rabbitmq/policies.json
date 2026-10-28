@@ -1,0 +1,70 @@
+{
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "pleaco-backend.user-verification-email.dead-letter",
+      "pattern": "^pleaco\\-backend\\.user\\-verification\\-email$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "dead-letter-exchange": "pleaco-backend.user-verification-email.dlx"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "pleaco-backend.user-verification-email.retry-delay",
+      "pattern": "^pleaco\\-backend\\.user\\-verification\\-email\\.retry$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "message-ttl": 5000,
+        "dead-letter-exchange": "",
+        "dead-letter-routing-key": "pleaco-backend.user-verification-email"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "pleaco-backend.group-member-invitation-email.dead-letter",
+      "pattern": "^pleaco\\-backend\\.group\\-member\\-invitation\\-email$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "dead-letter-exchange": "pleaco-backend.group-member-invitation-email.dlx"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "pleaco-backend.group-member-invitation-email.retry-delay",
+      "pattern": "^pleaco\\-backend\\.group\\-member\\-invitation\\-email\\.retry$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "message-ttl": 5000,
+        "dead-letter-exchange": "",
+        "dead-letter-routing-key": "pleaco-backend.group-member-invitation-email"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "pleaco-backend.robot-status.dead-letter",
+      "pattern": "^pleaco\\-backend\\.robot\\-status$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "dead-letter-exchange": "pleaco-backend.robot-status.dlx"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "pleaco-backend.robot-status.retry-delay",
+      "pattern": "^pleaco\\-backend\\.robot\\-status\\.retry$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "message-ttl": 5000,
+        "dead-letter-exchange": "",
+        "dead-letter-routing-key": "pleaco-backend.robot-status"
+      }
+    }
+  ]
+}

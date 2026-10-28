@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyHttpUrl, PositiveInt
+from pydantic import AnyHttpUrl, PositiveInt, NonNegativeInt, PositiveFloat
 
 
 class AppEnvTypes(Enum):
@@ -67,6 +67,8 @@ class Settings(BaseAppSettings):
     # A complete AMQP URL keeps deployment configuration in one portable setting.
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
     RABBITMQ_CONNECT_TIMEOUT: float = 10.0
+    RABBITMQ_MAX_RETRIES: NonNegativeInt = 3
+    RABBITMQ_PUBLISH_TIMEOUT: PositiveFloat = 10.0
 
     # Device-facing MQTT / Mosquitto
     MQTT_HOST: str = "localhost"

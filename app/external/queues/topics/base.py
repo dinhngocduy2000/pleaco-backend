@@ -67,6 +67,7 @@ class Topic:
         prefetch_count: int = 10,
         durable: bool = True,
         requeue_on_error: bool = True,
+        max_retries: int | None = None,
     ) -> TopicSubscription:
         """Subscribe ``handler`` through a queue owned by the calling service."""
         return await self._client.subscribe(
@@ -77,4 +78,5 @@ class Topic:
             prefetch_count=prefetch_count,
             durable=durable,
             requeue_on_error=requeue_on_error,
+            max_retries=max_retries,
         )
