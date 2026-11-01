@@ -34,9 +34,17 @@ class AuthMiddleware:
             )
 
         hashed_access_token = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
-        cached_access_token = await cls.auth_service.repo.user_repo().get_token(
-            hashed_access_token, ctx
-        )
+        try:
+            cached_access_token = await cls.auth_service.repo.user_repo().get_token(
+                hashed_access_token, ctx
+            )
+        except Exception as e:
+            logger.warning(msg="Token cache unavailable", context=ctx)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service Unavailable",
+            )
+
         if cached_access_token is None:
             logger.error(msg=f"Access token not found in cache...", context=ctx)
             raise HTTPException(
