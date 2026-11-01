@@ -2,11 +2,13 @@ from typing import List, Optional, Sequence
 from uuid import UUID as PythonUUID
 from sqlalchemy import UUID, Select, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from redis.exceptions import (
+    ConnectionError as RedisConnectionError,
+    TimeoutError as RedisTimeoutError,
+)
 from app.common.context import AppContext
 from app.common.enum.user_status import UserStatus
 from app.common.middleware.logger import Logger
-from app.common.schemas.common import HashMapResponse
 from app.common.schemas.user import (
     UserInfo,
     UserJoinOption,
@@ -21,6 +23,12 @@ from app.models.group import Group
 from app.core.config import settings
 
 logger = Logger()
+
+CACHE_UNAVAILABLE = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    TimeoutError,  # Application-level asyncio deadline.
+)
 
 
 REPLACE_HASHED_TOKEN_SCRIPT = """
@@ -247,12 +255,8 @@ class UserRepository:
             if cached_profile is None:
                 return None
             return UserInfo.model_validate_json(cached_profile)
-        except Exception as e:
-            logger.error(
-                msg=f"Get cached user profile repository: Exception: {e}",
-                context=ctx,
-            )
-            raise
+        except CACHE_UNAVAILABLE as e:
+            logger.warning(msg="Profile cache unavailable", context=ctx)
 
     async def set_cached_user_profile(
         self, user_profile: UserInfo, ctx: AppContext
@@ -263,11 +267,8 @@ class UserRepository:
                 value=user_profile.model_dump_json(),
                 expire=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
             )
-        except Exception as e:
-            logger.error(
-                msg=f"Set cached user profile repository: Exception: {e}",
-                context=ctx,
-            )
+        except CACHE_UNAVAILABLE as e:
+            logger.warning(msg="Unable to populate profile cache", context=ctx)
             raise
 
     async def set_hashed_token(
