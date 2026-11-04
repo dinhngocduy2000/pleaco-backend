@@ -1,4 +1,7 @@
-from typing import Optional
+from collections.abc import AsyncIterator, Mapping
+from datetime import timedelta
+from typing import TypeAlias, cast
+from uuid import UUID
 
 from redis.asyncio import ConnectionPool, Redis
 from app.common.middleware.logger import Logger
@@ -6,11 +9,14 @@ from app.core.config import settings
 
 logger = Logger()
 
+RedisValue: TypeAlias = str | bytes | memoryview | int | float
+RedisLuaResult: TypeAlias = str | int | None | list["RedisLuaResult"]
+
 
 class RedisClient:
     pool: ConnectionPool
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.pool = ConnectionPool(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
@@ -23,22 +29,27 @@ class RedisClient:
             username="default",
         )
 
-    async def set(self, key, value, expire=None):
+    async def set(self, key: str, value: RedisValue, expire: int | timedelta | None = None) -> None:
         async with Redis(connection_pool=self.pool) as client:
             await client.set(key, value, ex=expire)
 
-    async def get(self, key):
+    async def get(self, key: str) -> str | None:
         async with Redis(connection_pool=self.pool) as client:
-            return await client.get(key)
+            return cast(str | None, await client.get(key))
 
-    async def mget(self, keys: list[str]):
+    async def scan_iter(self, pattern: str) -> AsyncIterator[str]:
+        async with Redis(connection_pool=self.pool) as client:
+            async for key in client.scan_iter(match=pattern, count=100):
+                yield cast(str, key)
+
+    async def mget(self, keys: list[str]) -> list[str | None]:
         if not keys:
             return []
         async with Redis(connection_pool=self.pool) as client:
-            return await client.mget(keys)
+            return cast(list[str | None], await client.mget(keys))
 
     async def update_robot_status_cache(
-        self, robot_id, sequence_number: int, state: str,
+        self, robot_id: UUID | str, sequence_number: int, state: str,
         connection_status: str, connection_changed: bool,
         received_at: str, ttl: int,
     ) -> bool:
@@ -85,26 +96,26 @@ class RedisClient:
             connection_status, received_at, ttl,
         ))
 
-    async def delete(self, key):
+    async def delete(self, key: str) -> None:
         async with Redis(connection_pool=self.pool) as client:
             await client.delete(key)
 
-    async def eval(self, script: str, numkeys: int, *keys_and_args):
+    async def eval(self, script: str, numkeys: int, *keys_and_args: RedisValue) -> RedisLuaResult:
         async with Redis(connection_pool=self.pool) as client:
-            return await client.eval(script, numkeys, *keys_and_args)
+            return cast(RedisLuaResult, await client.eval(script, numkeys, *keys_and_args))
 
-    async def decrease(self, key, amount=1):
+    async def decrease(self, key: str, amount: int = 1) -> None:
         async with Redis(connection_pool=self.pool) as client:
             await client.decr(key, amount)
 
-    async def hset(self, key: Optional[str], mapping:Optional[dict]):
+    async def hset(self, key: str | None, mapping: Mapping[RedisValue, RedisValue] | None) -> None:
         async with Redis(connection_pool=self.pool) as client:
             await client.hset(mapping=mapping, name=key)
 
-    async def hgetall(self, key) -> dict[str, str]:
+    async def hgetall(self, key: str) -> dict[str, str]:
         async with Redis(connection_pool=self.pool) as client:
-            return await client.hgetall(key)
+            return cast(dict[str, str], await client.hgetall(key))
 
-    async def hget(self, key):
+    async def hget(self, key: str) -> str | None:
         async with Redis(connection_pool=self.pool) as client:
-            return await client.hget(key=key)
+            return cast(str | None, await client.hget(key=key))

@@ -16,6 +16,7 @@ from app.repository.bot import BotRepository
 from app.repository.robot_tags import RobotTagsRepository
 from app.repository.tag import TagRepository
 from app.repository.user import UserRepository
+from app.repository.robot_action import RobotActionRepository
 
 
 class TransactionRunner(Protocol):
@@ -42,6 +43,9 @@ class Registry:
     _environment_zone_repo: EnvironmentZoneRepository
     _docking_station_repo: DockingStationRepository
     _map_tags_repo: MapTagsRepository
+
+    def robot_action_repo(self) -> RobotActionRepository:
+        return RobotActionRepository()
 
     def __init__(self, pg_engine: AsyncEngine, redis_client: RedisClient) -> None:
         self._pg_engine = pg_engine

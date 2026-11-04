@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_BOT,
+    SEND_ROBOT_COMMAND,
     SAVE_DOCKING_STATIONS,
     ASSIGN_DOCKING_STATION_ROBOT,
     CREATE_ENVIRONMENT_ZONES,
@@ -106,6 +107,8 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
 
 
 OWN_ONLY_ACTIONS: set[str] = {}
+for _role in (GroupRole.MEMBER, GroupRole.MODERATOR, GroupRole.ADMIN, GroupRole.OWNER):
+    ROLE_PERMISSIONS[_role].add(SEND_ROBOT_COMMAND)
 logger = Logger()
 
 

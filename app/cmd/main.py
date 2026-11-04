@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import suppress
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from app.core.rbac.permissions import PermissionService
 from app.external.queues.topics.base import init_topics
 from fastapi import FastAPI
@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.requests import Request
 
+from app.cmd.robot_commands import start_robot_commands
 from app.common.middleware import register_middleware
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.core.config import settings
@@ -52,12 +53,18 @@ from app.services.map_room import MapRoomService
 from app.services.tag import TagService
 from app.services.user import UserService
 from app.services.bot_status import BotStatusService
+from app.external.mqtt.robot_action import RobotActionMqttGateway
+from app.external.queues.topics.robot_action import RobotActionTopic
+from app.external.redis.robot_commands import RobotCommandStore
+from app.handler.robot_action import RobotActionHandler
+from app.router.robot_action import RobotActionRouter
+from app.services.robot_action import RobotActionService
 
 
 class App:
     application: FastAPI
 
-    def on_init_app(self) -> Callable:
+    def on_init_app(self) -> Callable[[], Awaitable[None]]:
         async def start_app() -> None:
             pg_engine = create_pg_engine()
             redis_client = RedisClient()
@@ -80,9 +87,17 @@ class App:
             )
             permission_service = PermissionService(repo=registry)
             room_service = RoomService(socket_server)
-            robot_status_publisher = RobotStatusRealtimePublisher(room_service)
+            robot_status_realtime_publisher = RobotStatusRealtimePublisher(room_service)
+            robot_command_store = RobotCommandStore(redis_client)
+            robot_action_topic = RobotActionTopic(rabbitmq_client)
+            robot_action_mqtt_gateway = RobotActionMqttGateway(robot_action_topic, robot_command_store)
+            robot_action_service = RobotActionService(
+                registry, permission_service, robot_command_store, robot_action_topic, robot_action_mqtt_gateway
+            )
+            self.application.state.robot_action_mqtt_gateway = robot_action_mqtt_gateway
             bot_status_service = BotStatusService(
-                repo=registry, realtime_publisher=robot_status_publisher
+                registry=registry, robot_status_realtime_publisher=robot_status_realtime_publisher,
+                robot_action_service=robot_action_service,
             )
             robot_status_topic = RobotStatusTopic(rabbitmq_client, bot_status_service)
             mqtt_ingestion = RobotStatusMqttIngestion(robot_status_topic, bot_status_service)
@@ -152,6 +167,7 @@ class App:
                 auth_service=auth_service,
             )
             bot_handler = BotHandler(service=bot_service)
+            robot_action_handler = RobotActionHandler(robot_action_service)
             tag_handler = TagHandler(service=tag_service)
             map_handler = MapHandler(service=map_service)
 
@@ -161,6 +177,10 @@ class App:
             mail_router = MailRouter(handler=mail_handler)
             group_router = GroupRouter(handler=group_handler)
             bot_router = BotRouter(handler=bot_handler)
+            robot_action_router = RobotActionRouter(robot_action_handler)
+            self.application.include_router(
+                robot_action_router.router, prefix=settings.API_V1_PREFIX + "/bots", tags=["Robot commands"]
+            )
             tag_router = TagRouter(handler=tag_handler)
             map_router = MapRouter(handler=map_handler)
             self.application.include_router(
@@ -198,12 +218,26 @@ class App:
                 prefix=settings.API_V1_PREFIX + "/maps",
                 tags=["Maps"],
             )
+            # Command broker availability must not block auth/HTTP routes.
+            self.application.state.robot_command_startup_task = asyncio.create_task(
+                start_robot_commands(self.application, robot_action_service, robot_action_mqtt_gateway),
+                name="robot-command-startup",
+            )
 
         return start_app
 
-    def on_terminate_app(self) -> Callable:
+    def on_terminate_app(self) -> Callable[[], Awaitable[None]]:
         @logger.catch
         async def stop_app() -> None:
+            for task_name in ("robot_command_startup_task", "robot_command_reconciler_task"):
+                command_task = getattr(self.application.state, task_name, None)
+                if command_task is not None:
+                    command_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await command_task
+            robot_action_mqtt_gateway = getattr(self.application.state, "robot_action_mqtt_gateway", None)
+            if robot_action_mqtt_gateway is not None:
+                await robot_action_mqtt_gateway.stop()
             expiry_task = getattr(
                 self.application.state, "group_invitation_expiry_task", None
             )
