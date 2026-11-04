@@ -2,6 +2,8 @@
 
 import json
 from datetime import datetime, timezone
+from typing import TypedDict
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,19 +11,44 @@ from app.common.enum.robot import RobotConnectionStatus, RobotOperationalStatus
 from app.common.middleware.logger import Logger
 from app.common.schemas.robot_status import RobotHeartbeatEvent, RobotStatusEvent
 from app.core.config import settings
+from app.external.realtime.robot_status import RobotStatusRealtimePublisher
 from app.models.robot import Robot
 from app.repository.registry import Registry
+from app.services.robot_action import RobotActionService
 
 logger = Logger()
 
 
+class _RobotStatusState(TypedDict):
+    ip_address: str | None
+    connection_status: str
+    operational_status: str
+    last_sequence_number: int
+    last_message_id: str | None
+
+
+class _ScopedRobotStatusState(_RobotStatusState):
+    group_id: UUID
+    map_id: UUID | None
+
+
+class _RobotStatusCache(_RobotStatusState):
+    robot_id: str
+
+
 class BotStatusService:
-    def __init__(self, repo: Registry, realtime_publisher) -> None:
-        self.repo = repo
-        self._realtime_publisher = realtime_publisher
+    def __init__(
+        self,
+        registry: Registry,
+        robot_status_realtime_publisher: RobotStatusRealtimePublisher,
+        robot_action_service: RobotActionService | None = None,
+    ) -> None:
+        self.registry = registry
+        self._robot_status_realtime_publisher = robot_status_realtime_publisher
+        self._robot_action_service = robot_action_service
 
     @staticmethod
-    def _last_seen_key(robot_id) -> str:
+    def _last_seen_key(robot_id: UUID) -> str:
         return f"robot:{robot_id}:last_seen_at"
 
     async def process_heartbeat_event(self, event: RobotHeartbeatEvent) -> None:
@@ -36,7 +63,7 @@ class BotStatusService:
         async def refresh_last_seen(session: AsyncSession) -> None:
             # Use the same row lock as status reconciliation across workers.
             # A plain read could observe ONLINE just before OFFLINE commits.
-            bot = await self.repo.bot_repo().get_by_id_for_update(
+            bot = await self.registry.bot_repo().get_by_id_for_update(
                 session, event.robot_id
             )
             if bot is None or bot.connection_status != RobotConnectionStatus.ONLINE:
@@ -47,7 +74,7 @@ class BotStatusService:
             try:
                 # Refresh the one live timestamp and its TTL together. The
                 # device's timestamp is not authoritative.
-                await self.repo._redis_client.set(
+                await self.registry._redis_client.set(
                     self._last_seen_key(event.robot_id),
                     datetime.now(timezone.utc).isoformat(),
                     expire=settings.HEARTBEAT_REDIS_TTL_SECONDS,
@@ -66,7 +93,7 @@ class BotStatusService:
                 )
             )
 
-        await self.repo.transaction_wrapper(refresh_last_seen)
+        await self.registry.transaction_wrapper(refresh_last_seen)
 
     async def process_status_event(self, event: RobotStatusEvent) -> None:
         """Save an ordered status event, then update its Redis cache.
@@ -77,17 +104,26 @@ class BotStatusService:
         an older event from updating the cache after a newer one has committed.
         """
         received_at = datetime.now(timezone.utc)
-        result = await self.repo.transaction_wrapper(
+        result = await self.registry.transaction_wrapper(
             lambda session: self._save_status(session, event, received_at)
         )
         if result is None:
             return
 
         state, connection_changed, last_seen_at = result
+        if self._robot_action_service is not None and state["connection_status"] != RobotConnectionStatus.ONLINE.value:
+            # Reconciliation rechecks current ownership/liveness so an older
+            # offline event cannot cancel work admitted after a newer ONLINE.
+            try:
+                await self._robot_action_service.reconcile_robot(event.robot_id)
+            except Exception:
+                # Connectivity processing must still update/broadcast its
+                # accepted state; the command reconciler retries cancellation.
+                logger.warning(msg=f"Unable to cancel pending command for {event.robot_id}")
         # Build the cache value from the accepted database state, including
         # its sequence. The event payload cannot choose a group or override
         # values retained from the existing robot row.
-        cache_state = {
+        cache_state: _RobotStatusCache = {
             "robot_id": str(event.robot_id),
             **{
                 key: state[key]
@@ -105,7 +141,7 @@ class BotStatusService:
             # Recheck under the row lock: another event may have committed
             # between the database write and this cache update. Redis has its
             # own sequence check because cache writes can arrive late.
-            is_current = await self.repo.transaction_wrapper(
+            is_current = await self.registry.transaction_wrapper(
                 lambda session: self._update_cache_if_current(
                     session, event, cache_state, state, connection_changed, received_at
                 )
@@ -118,7 +154,7 @@ class BotStatusService:
         # Only connectivity transitions reach Socket.IO. Newer operational or
         # IP updates still persist their ordering fields and cached state.
         if connection_changed and is_current:
-            await self._realtime_publisher.publish(
+            await self._robot_status_realtime_publisher.publish(
                 group_id=state["group_id"],
                 map_id=state["map_id"],
                 robot_id=event.robot_id,
@@ -132,8 +168,8 @@ class BotStatusService:
         self,
         session: AsyncSession,
         event: RobotStatusEvent,
-        cache_state: dict,
-        state: dict,
+        cache_state: _RobotStatusCache,
+        state: _ScopedRobotStatusState,
         connection_changed: bool,
         received_at: datetime,
     ) -> bool:
@@ -146,10 +182,10 @@ class BotStatusService:
         # This second transaction holds the lock through the Redis operation.
         # The first transaction has already committed, so the cache never
         # leads an uncommitted database transition.
-        bot = await self.repo.bot_repo().get_by_id_for_update(session, event.robot_id)
+        bot = await self.registry.bot_repo().get_by_id_for_update(session, event.robot_id)
         if bot is None or bot.last_sequence_number != event.sequence_number:
             return False
-        await self.repo._redis_client.update_robot_status_cache(
+        await self.registry._redis_client.update_robot_status_cache(
             event.robot_id,
             event.sequence_number,
             json.dumps(cache_state),
@@ -162,14 +198,14 @@ class BotStatusService:
 
     async def _save_status(
         self, session: AsyncSession, event: RobotStatusEvent, received_at: datetime
-    ) -> tuple[dict, bool, datetime | None] | None:
+    ) -> tuple[_ScopedRobotStatusState, bool, datetime | None] | None:
         """Check ordering and persist one event while holding the robot row lock.
 
         Every accepted newer event persists its sequence. ``last_seen_at``
         changes only on a connectivity transition; going offline snapshots
         the latest Redis heartbeat when one is available.
         """
-        bot = await self.repo.bot_repo().get_by_id_for_update(session, event.robot_id)
+        bot = await self.registry.bot_repo().get_by_id_for_update(session, event.robot_id)
         if bot is None:
             logger.warning(
                 msg=f"Ignoring status event for unknown robot {event.robot_id}"
@@ -199,7 +235,7 @@ class BotStatusService:
         )
 
     def _accept_status_event(
-        self, bot: Robot, event: RobotStatusEvent, old_state: dict
+        self, bot: Robot, event: RobotStatusEvent, old_state: _RobotStatusState
     ) -> bool:
         """Reject stale events and operational updates that cannot apply yet."""
         # Check the durable sequence while holding the lock, even if Redis
@@ -232,14 +268,14 @@ class BotStatusService:
         return True
 
     @staticmethod
-    def _connection_changed(old_state: dict, state: dict) -> bool:
+    def _connection_changed(old_state: _RobotStatusState, state: _RobotStatusState) -> bool:
         """Check whether this event changes the robot's connectivity."""
         return state["connection_status"] != old_state["connection_status"]
 
     async def _last_seen_for_status(
         self,
         bot: Robot,
-        robot_id,
+        robot_id: UUID,
         connection_status: str,
         connection_changed: bool,
         received_at: datetime,
@@ -255,13 +291,13 @@ class BotStatusService:
         return bot.last_seen_at
 
     async def _offline_last_seen(
-        self, robot_id, saved_at: datetime | None
+        self, robot_id: UUID, saved_at: datetime | None
     ) -> datetime | None:
         """Use a newer Redis heartbeat when taking the offline database snapshot."""
         try:
             # Keep the existing database snapshot if freshness expired
             # or Redis is unavailable; an offline event is not a heartbeat.
-            raw = await self.repo._redis_client.get(self._last_seen_key(robot_id))
+            raw = await self.registry._redis_client.get(self._last_seen_key(robot_id))
             if raw:
                 parsed = datetime.fromisoformat(raw)
                 if parsed.tzinfo is None:
@@ -285,14 +321,14 @@ class BotStatusService:
         session: AsyncSession,
         bot: Robot,
         event: RobotStatusEvent,
-        state: dict,
+        state: _RobotStatusState,
         last_seen_at: datetime | None,
         connection_changed: bool,
     ) -> None:
         """Persist status and ordering fields for every accepted event."""
         # Persist ordering even for an accepted event with unchanged visible
         # state. Otherwise a delayed LWT could pass after Redis data loss.
-        await self.repo.bot_repo().update_status(
+        await self.registry.bot_repo().update_status(
             session,
             bot,
             ip_address=state["ip_address"],
@@ -305,7 +341,7 @@ class BotStatusService:
         )
 
     @staticmethod
-    def _robot_state(bot) -> dict:
+    def _robot_state(bot: Robot) -> _RobotStatusState:
         return {
             "ip_address": str(bot.ip_address) if bot.ip_address is not None else None,
             "connection_status": bot.connection_status.value,
@@ -317,7 +353,7 @@ class BotStatusService:
         }
 
     @staticmethod
-    def _new_state(state: dict, event: RobotStatusEvent) -> dict:
+    def _new_state(state: _RobotStatusState, event: RobotStatusEvent) -> _RobotStatusState:
         return {
             **state,
             "ip_address": (
@@ -340,7 +376,7 @@ class BotStatusService:
         }
 
     @staticmethod
-    def _is_duplicate_or_old(event: RobotStatusEvent, state: dict) -> bool:
+    def _is_duplicate_or_old(event: RobotStatusEvent, state: _RobotStatusState) -> bool:
         if state.get("last_message_id") == str(event.message_id):
             return True
         last_sequence = state.get("last_sequence_number")

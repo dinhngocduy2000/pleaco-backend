@@ -1,8 +1,4 @@
-from enum import Enum
+from app.common.enum.direction import Direction
 
-
-class DockingStationHeading(str, Enum):
-    NORTH = "NORTH"
-    SOUTH = "SOUTH"
-    EAST = "EAST"
-    WEST = "WEST"
+# Preserve imports and the database enum while sharing cardinal directions.
+DockingStationHeading = Direction

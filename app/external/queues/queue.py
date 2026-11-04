@@ -18,6 +18,7 @@ from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractRobustConnection,
     AbstractQueue,
+    FieldValue,
 )
 from pydantic import BaseModel
 
@@ -37,7 +38,7 @@ class TopicMessage:
 
     payload: dict[str, Any]
     routing_key: str
-    headers: Mapping[str, Any] = field(default_factory=dict)
+    headers: Mapping[str, FieldValue] = field(default_factory=dict)
     message_id: str | None = None
     correlation_id: str | None = None
 
@@ -120,7 +121,7 @@ class RabbitMQClient:
         routing_key: str,
         payload: JsonPayload,
         *,
-        headers: Mapping[str, Any] | None = None,
+        headers: Mapping[str, FieldValue] | None = None,
         correlation_id: str | None = None,
     ) -> str:
         """Publish a persistent JSON message and return its message ID."""
@@ -155,6 +156,8 @@ class RabbitMQClient:
         durable: bool = True,
         requeue_on_error: bool = True,
         max_retries: int | None = None,
+        queue_arguments: Mapping[str, FieldValue] | None = None,
+        retry_queue_arguments: Mapping[str, FieldValue] | None = None,
     ) -> TopicSubscription:
         """Bind a durable queue to a topic exchange and start consuming it.
 
@@ -180,6 +183,8 @@ class RabbitMQClient:
         try:
             exchange, dead_exchange, dead_queue, queue = await self._declare_subscription_topology(
                 channel, exchange_name, queue_name, durable=durable,
+                queue_arguments=queue_arguments,
+                retry_queue_arguments=retry_queue_arguments,
             )
             await dead_queue.bind(dead_exchange, routing_key="")
             await queue.bind(exchange, routing_key=routing_key)
@@ -198,6 +203,8 @@ class RabbitMQClient:
         queue_name: str,
         *,
         durable: bool,
+        queue_arguments: Mapping[str, FieldValue] | None = None,
+        retry_queue_arguments: Mapping[str, FieldValue] | None = None,
     ) -> tuple[AbstractExchange, AbstractExchange, AbstractQueue, AbstractQueue]:
         """Declare subscription resources and return those needed for binding."""
         # Settle every declaration before binding or closing the channel on
@@ -206,10 +213,14 @@ class RabbitMQClient:
             channel.declare_exchange(exchange_name, ExchangeType.TOPIC, durable=True),
             channel.declare_exchange(f"{queue_name}.dlx", ExchangeType.FANOUT, durable=True),
             channel.declare_queue(f"{queue_name}.dlq", durable=True),
-            channel.declare_queue(f"{queue_name}.retry", durable=True),
+            channel.declare_queue(f"{queue_name}.retry", durable=True, **(
+                {"arguments": dict(retry_queue_arguments)} if retry_queue_arguments is not None else {}
+            )),
             # Policies supply DLX arguments without changing the existing
             # source declaration or requiring backlog deletion.
-            channel.declare_queue(queue_name, durable=durable),
+            channel.declare_queue(queue_name, durable=durable, **(
+                {"arguments": dict(queue_arguments)} if queue_arguments is not None else {}
+            )),
             return_exceptions=True,
         )
         for declaration in declarations:
