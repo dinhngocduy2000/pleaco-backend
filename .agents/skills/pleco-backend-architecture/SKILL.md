@@ -44,6 +44,12 @@ Read the reference that matches the task:
   - tenant/RBAC and event-integrity boundaries
   - anti-patterns
 
+- `references/naming-conventions.md`
+  - plain, readable Python identifiers and consistent Pleco domain terms
+
+- `references/python-typing.md`
+  - required parameter, return, and class-field annotations; precise typing without `Any` shortcuts
+
 For a new backend feature or a refactor that touches more than one layer or transport, read both
 references.
 
