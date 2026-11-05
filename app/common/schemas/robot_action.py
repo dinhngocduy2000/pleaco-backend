@@ -22,6 +22,15 @@ class RobotCoordinates(TypedDict):
     y: float
 
 
+class RobotMovementCoordinates(TypedDict):
+    """Origin and target coordinates in meters for movement validation."""
+
+    origin_x: Decimal
+    origin_y: Decimal
+    target_x: Decimal
+    target_y: Decimal
+
+
 class RobotCleaningActionRecord(TypedDict):
     type: Literal["CLEANING"]
     is_start: bool

@@ -17,14 +17,14 @@ class RobotActionRepository:
         return list(await session.scalars(select(Robot.id)))
 
     async def get_context(self, session: AsyncSession, robot_id: UUID) -> RobotActionContext | None:
-        centroid = func.ST_Centroid(DockingStation.geometry)
-        result = await session.execute(
+        dock_center = func.ST_Centroid(DockingStation.geometry)
+        query_result = await session.execute(
             select(
                 Robot.id.label("robot_id"), Robot.group_id, Robot.map_id,
                 Robot.connection_status, Robot.operational_status,
                 Map.dimension_x, Map.dimension_y,
-                func.ST_X(centroid).label("dock_x"),
-                func.ST_Y(centroid).label("dock_y"),
+                func.ST_X(dock_center).label("dock_x"),
+                func.ST_Y(dock_center).label("dock_y"),
             )
             .select_from(Robot)
             .outerjoin(Map, and_(Map.id == Robot.map_id, Map.group_id == Robot.group_id))
@@ -34,5 +34,5 @@ class RobotActionRepository:
             ))
             .where(Robot.id == robot_id)
         )
-        row = result.mappings().one_or_none()
-        return cast(RobotActionContext, dict(row)) if row is not None else None
+        robot_context = query_result.mappings().one_or_none()
+        return cast(RobotActionContext, dict(robot_context)) if robot_context is not None else None

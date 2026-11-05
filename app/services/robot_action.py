@@ -14,6 +14,7 @@ from app.common.middleware.logger import Logger
 from app.common.schemas.robot_action import (
     CommandStatus, RobotAcknowledgement, RobotCommand, RobotCommandInfo, RobotPosition,
     RobotActionContext, RobotCommandRecord, RobotCommandRequest, RobotPositionRecord,
+    RobotMovementCoordinates,
 )
 from app.common.schemas.user import Credential
 from app.core.config import settings
@@ -123,11 +124,97 @@ class RobotActionService:
         raw = await self.robot_command_store.redis_client.get(f"robot:{context['robot_id']}:last_seen_at")
         try:
             last_seen = datetime.fromisoformat(raw) if raw else None
-            return last_seen is not None and last_seen.tzinfo is not None and (
-                0 <= (self.clock() - last_seen).total_seconds() <= settings.HEARTBEAT_REDIS_TTL_SECONDS
+            is_heartbeat_fresh = (
+                last_seen is not None
+                and last_seen.tzinfo is not None
+                and 0 <= (self.clock() - last_seen).total_seconds() <= settings.HEARTBEAT_REDIS_TTL_SECONDS
             )
+            return is_heartbeat_fresh
         except (ValueError, TypeError):
             return False
+
+    async def _ensure_robot_ready(
+        self, *, robot_id: UUID, context: RobotActionContext,
+    ) -> None:
+        """Check command prerequisites and reconcile the robot's pending work.
+
+        Args:
+            robot_id: Robot whose pending command should be reconciled.
+            context: Persisted robot connectivity and assigned-map facts.
+
+        Raises:
+            BadRequestException: With status 503 when liveness cannot be
+                checked, 409 when the robot is offline or stale, or 400 when
+                the robot has no assigned map.
+
+        Once the prerequisites pass, reconciliation may expire, cancel, or
+        recover an existing pending command before a new submission proceeds.
+        """
+        try:
+            online = await self._live(context)
+        except Exception as error:
+            raise BadRequestException(message="Robot liveness is unavailable", status_code=503) from error
+        if not online:
+            raise BadRequestException(message="Robot is offline or stale", status_code=409)
+        if context["map_id"] is None or context["dimension_x"] is None:
+            raise BadRequestException(message="Robot must have an assigned map")
+        await self.reconcile_robot(robot_id)
+
+    @staticmethod
+    def _resolve_origin(
+        *,
+        position: RobotPositionRecord | None,
+        context: RobotActionContext,
+        group_id: UUID | None,
+    ) -> tuple[Decimal, Decimal]:
+        """Resolve the movement origin from a matching position or assigned dock.
+
+        Args:
+            position: Last confirmed position, if one is cached.
+            context: Current robot map and docking-station centroid.
+            group_id: Active group whose cached position may be used.
+
+        Returns:
+            tuple[Decimal, Decimal]: Origin X/Y coordinates in meters. A cached
+            position must match the active group and current map; otherwise,
+            use the assigned docking station's centroid.
+
+        Raises:
+            BadRequestException: If neither a matching position nor a docking
+                centroid is available.
+        """
+        usable = position and position.get("group_id") == str(group_id) and position.get("map_id") == str(context["map_id"])
+        if usable:
+            return Decimal(str(position["x"])), Decimal(str(position["y"]))
+        if context["dock_x"] is not None and context["dock_y"] is not None:
+            return Decimal(str(context["dock_x"])), Decimal(str(context["dock_y"]))
+        raise BadRequestException(message="Robot has no confirmed position or assigned docking station")
+
+    def _validate_movement(
+        self,
+        *,
+        context: RobotActionContext,
+        coordinates: RobotMovementCoordinates,
+    ) -> None:
+        """Validate a proposed movement against the map's dimensions.
+
+        Args:
+            context: Robot context containing the assigned map's dimensions.
+            coordinates: Current origin and proposed target coordinates in
+                meters, retaining Decimal precision during validation.
+
+        Raises:
+            BadRequestException: If the origin is nonfinite or the target is
+                outside the map dimensions. Targets exactly on an edge are
+                allowed.
+        """
+        if not (
+            coordinates["origin_x"].is_finite()
+            and coordinates["origin_y"].is_finite()
+            and 0 <= coordinates["target_x"] <= context["dimension_x"]
+            and 0 <= coordinates["target_y"] <= context["dimension_y"]
+        ):
+            raise BadRequestException(message="Movement target is outside map dimensions")
 
     @require_permission(GroupRole.MEMBER)
     async def submit(
@@ -163,28 +250,25 @@ class RobotActionService:
                 liveness check cannot access its dependencies.
         """
         context = await self._owned_context(robot_id, credential, group_id)
-        try:
-            online = await self._live(context)
-        except Exception as error:
-            raise BadRequestException(message="Robot liveness is unavailable", status_code=503) from error
-        if not online:
-            raise BadRequestException(message="Robot is offline or stale", status_code=409)
-        if context["map_id"] is None or context["dimension_x"] is None:
-            raise BadRequestException(message="Robot must have an assigned map")
-        await self.reconcile_robot(robot_id)
+        await self._ensure_robot_ready(robot_id=robot_id, context=context)
         position = await self.robot_command_store.position(robot_id)
-        usable = position and position.get("group_id") == str(group_id) and position.get("map_id") == str(context["map_id"])
-        if usable:
-            x, y = Decimal(str(position["x"])), Decimal(str(position["y"]))
-        elif context["dock_x"] is not None and context["dock_y"] is not None:
-            x, y = Decimal(str(context["dock_x"])), Decimal(str(context["dock_y"]))
-        else:
-            raise BadRequestException(message="Robot has no confirmed position or assigned docking station")
+        x, y = self._resolve_origin(
+            position=position,
+            context=context,
+            group_id=group_id,
+        )
         distance = Decimal(request.action.distance[:-1])
         dx, dy = {"NORTH": (0, 1), "SOUTH": (0, -1), "EAST": (1, 0), "WEST": (-1, 0)}[request.action.direction]
         target_x, target_y = x + dx * distance, y + dy * distance
-        if not (x.is_finite() and y.is_finite() and 0 <= target_x <= context["dimension_x"] and 0 <= target_y <= context["dimension_y"]):
-            raise BadRequestException(message="Movement target is outside map dimensions")
+        self._validate_movement(
+            context=context,
+            coordinates=RobotMovementCoordinates(
+                origin_x=x,
+                origin_y=y,
+                target_x=target_x,
+                target_y=target_y,
+            ),
+        )
         # Ensure routing exists before reserving/publishing command intent.
         await self.robot_action_topic.ensure_robot(robot_id)
         now = self.clock().isoformat()
@@ -345,50 +429,67 @@ class RobotActionService:
         retries keep the same command/attempt identity for device deduplication.
         A transport confirmation alone does not update the robot's position.
         """
-        record = await self.robot_command_store.active(message.robot_id)
-        if record is None:
+        active_command = await self.robot_command_store.active(message.robot_id)
+        if active_command is None:
             return
-        expected = {key: record[key] for key in RobotCommand.model_fields}
-        received = message.model_dump(mode="json", exclude={"ack"})
-        if expected != received or not await self._eligible(record):
+        saved_fields = {field: active_command[field] for field in RobotCommand.model_fields}
+        message_fields = message.model_dump(mode="json", exclude={"ack"})
+        if saved_fields != message_fields or not await self._eligible(active_command):
             return
         if isinstance(message, RobotAcknowledgement):
-            if record["status"] != CommandStatus.AWAITING_ACK.value:
+            if active_command["status"] != CommandStatus.AWAITING_ACK.value:
                 return
             if message.ack:
-                position: RobotPositionRecord = {
-                    "robot_id": record["robot_id"], "group_id": record["group_id"],
-                    "map_id": record["map_id"], **record["target"],
-                    "command_id": record["command_id"], "updated_at": self.clock().isoformat(),
+                confirmed_position: RobotPositionRecord = {
+                    "robot_id": active_command["robot_id"],
+                    "group_id": active_command["group_id"],
+                    "map_id": active_command["map_id"],
+                    **active_command["target"],
+                    "command_id": active_command["command_id"],
+                    "updated_at": self.clock().isoformat(),
                 }
-                await self._finish(record, CommandStatus.SUCCEEDED, position=position)
+                await self._finish(active_command, CommandStatus.SUCCEEDED, position=confirmed_position)
             elif message.attempt >= 4:
-                await self._finish(record, CommandStatus.FAILED, "Robot action failed after three retries")
+                await self._finish(active_command, CommandStatus.FAILED, "Robot action failed after three retries")
             else:
-                updated: RobotCommandRecord = {**record, "attempt": message.attempt + 1, "status": CommandStatus.QUEUED.value,
-                           "updated_at": self.clock().isoformat(), "deadline": self._deadline()}
-                if await self.robot_command_store.transition(record, updated):
+                retry_command: RobotCommandRecord = {
+                    **active_command,
+                    "attempt": message.attempt + 1,
+                    "status": CommandStatus.QUEUED.value,
+                    "updated_at": self.clock().isoformat(),
+                    "deadline": self._deadline(),
+                }
+                if await self.robot_command_store.transition(active_command, retry_command):
                     # On publication failure reconciliation resumes this saved intent.
-                    await self.robot_action_topic.publish_command(self._envelope(updated))
+                    await self.robot_action_topic.publish_command(self._envelope(retry_command))
             return
-        if record["status"] == CommandStatus.QUEUED.value:
-            waiting: RobotCommandRecord = {**record, "status": CommandStatus.AWAITING_ACK.value,
-                       "updated_at": self.clock().isoformat(), "deadline": self._deadline()}
-            if not await self.robot_command_store.transition(record, waiting):
+        if active_command["status"] == CommandStatus.QUEUED.value:
+            pending_command: RobotCommandRecord = {
+                **active_command,
+                "status": CommandStatus.AWAITING_ACK.value,
+                "updated_at": self.clock().isoformat(),
+                "deadline": self._deadline(),
+            }
+            if not await self.robot_command_store.transition(active_command, pending_command):
                 return
-        elif record["status"] == CommandStatus.AWAITING_ACK.value and not await self.robot_command_store.dispatched(record):
+        elif (
+            active_command["status"] == CommandStatus.AWAITING_ACK.value
+            and not await self.robot_command_store.dispatched(active_command)
+        ):
             # Recover a crash between saving dispatch intent and confirming
             # MQTT publication; preserve the original acknowledgement deadline.
-            waiting = record
+            pending_command = active_command
         else:
             return
         try:
-            await self.robot_action_mqtt_gateway.publish_command(message, deadline=datetime.fromisoformat(waiting["deadline"]))
-            await self.robot_command_store.mark_dispatched(waiting)
+            await self.robot_action_mqtt_gateway.publish_command(
+                message, deadline=datetime.fromisoformat(pending_command["deadline"])
+            )
+            await self.robot_command_store.mark_dispatched(pending_command)
         except Exception:
             # An uncertain MQTT publish may have delivered: same attempt is
             # deduplicated by the robot, while the original deadline stays bounded.
-            await self.robot_command_store.transition(waiting, record)
+            await self.robot_command_store.transition(pending_command, active_command)
             raise
 
     @staticmethod
