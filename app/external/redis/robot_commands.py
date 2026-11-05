@@ -33,15 +33,15 @@ class RobotCommandStore:
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
     async def get(self, robot_id: UUID | str, command_id: UUID | str) -> RobotCommandRecord | None:
-        raw = await self.redis_client.get(self.command_key(robot_id, command_id))
-        return cast(RobotCommandRecord, json.loads(raw)) if raw else None
+        saved_command = await self.redis_client.get(self.command_key(robot_id, command_id))
+        return cast(RobotCommandRecord, json.loads(saved_command)) if saved_command else None
 
     async def active(self, robot_id: UUID | str) -> RobotCommandRecord | None:
         command_id = await self.redis_client.get(self.active_key(robot_id))
         if not command_id:
             return None
-        record = await self.get(robot_id, command_id)
-        if record is None:
+        active_command = await self.get(robot_id, command_id)
+        if active_command is None:
             # allkeys-lru may evict a record before its reservation. Release
             # only that dangling reservation, never a concurrent newer one.
             await self.redis_client.eval("""
@@ -51,14 +51,14 @@ class RobotCommandStore:
                 end
                 return 0
             """, 2, self.active_key(robot_id), self.command_key(robot_id, command_id), command_id)
-        return record
+        return active_command
 
     async def position(self, robot_id: UUID | str) -> RobotPositionRecord | None:
-        raw = await self.redis_client.get(self.position_key(robot_id))
-        return cast(RobotPositionRecord, json.loads(raw)) if raw else None
+        saved_position = await self.redis_client.get(self.position_key(robot_id))
+        return cast(RobotPositionRecord, json.loads(saved_position)) if saved_position else None
 
-    async def reserve(self, record: RobotCommandRecord, position: RobotPositionRecord | None) -> bool:
-        script = """
+    async def reserve(self, command: RobotCommandRecord, position: RobotPositionRecord | None) -> bool:
+        reserve_script = """
         if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
         local position = redis.call('GET', KEYS[3]) or ''
         if position ~= ARGV[3] then return 0 end
@@ -67,19 +67,19 @@ class RobotCommandStore:
         return 1
         """
         return bool(await self.redis_client.eval(
-            script, 3, self.active_key(record["robot_id"]),
-            self.command_key(record["robot_id"], record["command_id"]),
-            self.position_key(record["robot_id"]),
-            record["command_id"], self.encode(record),
+            reserve_script, 3, self.active_key(command["robot_id"]),
+            self.command_key(command["robot_id"], command["command_id"]),
+            self.position_key(command["robot_id"]),
+            command["command_id"], self.encode(command),
             self.encode(position) if position is not None else "", self.ttl,
         ))
 
     async def transition(
-        self, previous: RobotCommandRecord, updated: RobotCommandRecord, *,
+        self, current_command: RobotCommandRecord, updated_command: RobotCommandRecord, *,
         terminal: bool = False, position: RobotPositionRecord | None = None,
     ) -> bool:
         # Full-record CAS rejects duplicates and concurrent timeout/retry/ACK races.
-        script = """
+        transition_script = """
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
         if ARGV[7] == '1' then
@@ -98,27 +98,27 @@ class RobotCommandStore:
         return 1
         """
         return bool(await self.redis_client.eval(
-            script, 3, self.active_key(previous["robot_id"]),
-            self.command_key(previous["robot_id"], previous["command_id"]),
-            self.position_key(previous["robot_id"]), previous["command_id"],
-            self.encode(previous), self.encode(updated), self.ttl, int(terminal),
+            transition_script, 3, self.active_key(current_command["robot_id"]),
+            self.command_key(current_command["robot_id"], current_command["command_id"]),
+            self.position_key(current_command["robot_id"]), current_command["command_id"],
+            self.encode(current_command), self.encode(updated_command), self.ttl, int(terminal),
             self.encode(position) if position is not None else "",
-            int(updated["status"] in {"QUEUED", "AWAITING_ACK", "SUCCEEDED"}),
-            datetime.fromisoformat(previous["deadline"]).timestamp(),
+            int(updated_command["status"] in {"QUEUED", "AWAITING_ACK", "SUCCEEDED"}),
+            datetime.fromisoformat(current_command["deadline"]).timestamp(),
         ))
 
-    def dispatch_key(self, record: RobotCommandRecord) -> str:
-        return self.command_key(record["robot_id"], record["command_id"]) + f":dispatch:{record['attempt']}"
+    def dispatch_key(self, command: RobotCommandRecord) -> str:
+        return self.command_key(command["robot_id"], command["command_id"]) + f":dispatch:{command['attempt']}"
 
-    async def dispatched(self, record: RobotCommandRecord) -> bool:
-        return bool(await self.redis_client.get(self.dispatch_key(record)))
+    async def dispatched(self, command: RobotCommandRecord) -> bool:
+        return bool(await self.redis_client.get(self.dispatch_key(command)))
 
-    async def mark_dispatched(self, record: RobotCommandRecord) -> None:
-        await self.redis_client.set(self.dispatch_key(record), "1", expire=self.ttl)
+    async def mark_dispatched(self, command: RobotCommandRecord) -> None:
+        await self.redis_client.set(self.dispatch_key(command), "1", expire=self.ttl)
 
     async def active_robot_ids(self) -> AsyncIterator[UUID]:
-        async for key in self.redis_client.scan_iter("robot:*:active_command"):
+        async for active_command_key in self.redis_client.scan_iter("robot:*:active_command"):
             try:
-                yield UUID(key.split(":")[1])
+                yield UUID(active_command_key.split(":")[1])
             except (ValueError, IndexError):
                 continue
