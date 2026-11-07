@@ -61,11 +61,11 @@ class RobotActionService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.robot_action_topic.set_handler(self.process_message)
 
-    def _deadline(self) -> str:
+    def _command_deadline(self) -> str:
         """Return a new ISO 8601 deadline using the configured command timeout."""
         return (self.clock() + timedelta(seconds=settings.ROBOT_COMMAND_TIMEOUT_SECONDS)).isoformat()
 
-    async def _context(self, robot_id: UUID) -> RobotActionContext | None:
+    async def _get_robot_context(self, robot_id: UUID) -> RobotActionContext | None:
         """Load persisted robot, map, and docking facts in a short transaction.
 
         Args:
@@ -79,7 +79,7 @@ class RobotActionService:
             lambda session: self.registry.robot_action_repo().get_context(session, robot_id)
         )
 
-    async def _owned_context(
+    async def _get_group_robot_context(
         self, robot_id: UUID, credential: Credential, group_id: UUID | None,
     ) -> RobotActionContext:
         """Load a robot only within the caller's selected active group.
@@ -100,12 +100,12 @@ class RobotActionService:
         """
         if group_id is None or group_id != credential.active_group_id:
             raise ForbiddenException(message="An active group must be selected")
-        context = await self._context(robot_id)
+        context = await self._get_robot_context(robot_id)
         if context is None or str(context["group_id"]) != str(group_id):
             raise NotFoundException(message="Robot not found")
         return context
 
-    async def _live(self, context: RobotActionContext) -> bool:
+    async def _is_robot_online(self, context: RobotActionContext) -> bool:
         """Require persisted ONLINE status and a fresh backend heartbeat.
 
         Args:
@@ -121,15 +121,15 @@ class RobotActionService:
         """
         if context["connection_status"] != RobotConnectionStatus.ONLINE:
             return False
-        raw = await self.robot_command_store.redis_client.get(f"robot:{context['robot_id']}:last_seen_at")
+        heartbeat = await self.robot_command_store.redis_client.get(f"robot:{context['robot_id']}:last_seen_at")
         try:
-            last_seen = datetime.fromisoformat(raw) if raw else None
-            is_heartbeat_fresh = (
+            last_seen = datetime.fromisoformat(heartbeat) if heartbeat else None
+            heartbeat_is_fresh = (
                 last_seen is not None
                 and last_seen.tzinfo is not None
                 and 0 <= (self.clock() - last_seen).total_seconds() <= settings.HEARTBEAT_REDIS_TTL_SECONDS
             )
-            return is_heartbeat_fresh
+            return heartbeat_is_fresh
         except (ValueError, TypeError):
             return False
 
@@ -151,7 +151,7 @@ class RobotActionService:
         recover an existing pending command before a new submission proceeds.
         """
         try:
-            online = await self._live(context)
+            online = await self._is_robot_online(context)
         except Exception as error:
             raise BadRequestException(message="Robot liveness is unavailable", status_code=503) from error
         if not online:
@@ -183,8 +183,8 @@ class RobotActionService:
             BadRequestException: If neither a matching position nor a docking
                 centroid is available.
         """
-        usable = position and position.get("group_id") == str(group_id) and position.get("map_id") == str(context["map_id"])
-        if usable:
+        position_matches_map = position and position.get("group_id") == str(group_id) and position.get("map_id") == str(context["map_id"])
+        if position_matches_map:
             return Decimal(str(position["x"])), Decimal(str(position["y"]))
         if context["dock_x"] is not None and context["dock_y"] is not None:
             return Decimal(str(context["dock_x"])), Decimal(str(context["dock_y"]))
@@ -249,36 +249,36 @@ class RobotActionService:
                 missing map/origin or invalid target; 503 when the initial
                 liveness check cannot access its dependencies.
         """
-        context = await self._owned_context(robot_id, credential, group_id)
+        context = await self._get_group_robot_context(robot_id, credential, group_id)
         await self._ensure_robot_ready(robot_id=robot_id, context=context)
         position = await self.robot_command_store.position(robot_id)
-        x, y = self._resolve_origin(
+        origin_x, origin_y = self._resolve_origin(
             position=position,
             context=context,
             group_id=group_id,
         )
         distance = Decimal(request.action.distance[:-1])
-        dx, dy = {"NORTH": (0, 1), "SOUTH": (0, -1), "EAST": (1, 0), "WEST": (-1, 0)}[request.action.direction]
-        target_x, target_y = x + dx * distance, y + dy * distance
+        step_x, step_y = {"NORTH": (0, 1), "SOUTH": (0, -1), "EAST": (1, 0), "WEST": (-1, 0)}[request.action.direction]
+        target_x, target_y = origin_x + step_x * distance, origin_y + step_y * distance
         self._validate_movement(
             context=context,
             coordinates=RobotMovementCoordinates(
-                origin_x=x,
-                origin_y=y,
+                origin_x=origin_x,
+                origin_y=origin_y,
                 target_x=target_x,
                 target_y=target_y,
             ),
         )
         # Ensure routing exists before reserving/publishing command intent.
         await self.robot_action_topic.ensure_robot(robot_id)
-        now = self.clock().isoformat()
+        created_at = self.clock().isoformat()
         command = RobotCommand(robot_id=robot_id, command_id=uuid4(), attempt=1, action=request.action)
         record: RobotCommandRecord = {
             **command.model_dump(mode="json"), "group_id": str(group_id),
-            "map_id": str(context["map_id"]), "origin": {"x": float(x), "y": float(y)},
+            "map_id": str(context["map_id"]), "origin": {"x": float(origin_x), "y": float(origin_y)},
             "target": {"x": float(target_x), "y": float(target_y)},
-            "status": CommandStatus.QUEUED.value, "created_at": now, "updated_at": now,
-            "deadline": self._deadline(), "failure_reason": None,
+            "status": CommandStatus.QUEUED.value, "created_at": created_at, "updated_at": created_at,
+            "deadline": self._command_deadline(), "failure_reason": None,
         }
         if not await self.robot_command_store.reserve(record, position):
             raise BadRequestException(message="Robot is busy or its position changed; retry the request", status_code=409)
@@ -287,10 +287,10 @@ class RobotActionService:
         except Exception:
             # Persisted QUEUED intent is retried by reconciliation, never lost.
             logger.warning(msg=f"Robot command {command.command_id} awaits broker publication")
-        return self._info(record)
+        return self._command_info(record)
 
     @staticmethod
-    def _info(record: RobotCommandRecord) -> RobotCommandInfo:
+    def _command_info(record: RobotCommandRecord) -> RobotCommandInfo:
         """Project an internal Redis record onto the public command schema.
 
         Args:
@@ -303,8 +303,8 @@ class RobotActionService:
             ValidationError: If the selected fields do not form a valid command
                 status response.
         """
-        fields = RobotCommandInfo.model_fields
-        return RobotCommandInfo.model_validate({key: value for key, value in record.items() if key in fields})
+        public_fields = RobotCommandInfo.model_fields
+        return RobotCommandInfo.model_validate({key: value for key, value in record.items() if key in public_fields})
 
     @require_permission(GroupRole.GUEST)
     async def get_command(
@@ -331,12 +331,12 @@ class RobotActionService:
             NotFoundException: If the robot or command is missing, the command
                 has expired from Redis, or either belongs to another group.
         """
-        await self._owned_context(robot_id, credential, group_id)
+        await self._get_group_robot_context(robot_id, credential, group_id)
         await self.reconcile_robot(robot_id)
         record = await self.robot_command_store.get(robot_id, command_id)
         if record is None or record["group_id"] != str(group_id):
             raise NotFoundException(message="Command not found")
-        return self._info(record)
+        return self._command_info(record)
 
     @require_permission(GroupRole.GUEST)
     async def get_position(
@@ -360,13 +360,13 @@ class RobotActionService:
             ForbiddenException: If role or active-group requirements fail.
             NotFoundException: If the robot is missing from the active group.
         """
-        context = await self._owned_context(robot_id, credential, group_id)
+        context = await self._get_group_robot_context(robot_id, credential, group_id)
         position = await self.robot_command_store.position(robot_id)
         if position is None or position.get("group_id") != str(group_id) or position.get("map_id") != str(context["map_id"]):
             return None
         return RobotPosition.model_validate(position)
 
-    async def _finish(
+    async def _finish_command(
         self, record: RobotCommandRecord, status: CommandStatus, reason: str | None = None, *,
         position: RobotPositionRecord | None = None,
     ) -> bool:
@@ -384,10 +384,10 @@ class RobotActionService:
             reservation, record, or applicable deadline check no longer matches.
             An omitted position leaves the existing position and its TTL intact.
         """
-        updated: RobotCommandRecord = {**record, "status": status.value, "updated_at": self.clock().isoformat(), "failure_reason": reason}
-        return await self.robot_command_store.transition(record, updated, terminal=True, position=position)
+        updated_record: RobotCommandRecord = {**record, "status": status.value, "updated_at": self.clock().isoformat(), "failure_reason": reason}
+        return await self.robot_command_store.transition(record, updated_record, terminal=True, position=position)
 
-    async def _eligible(self, record: RobotCommandRecord) -> bool:
+    async def _can_process_command(self, record: RobotCommandRecord) -> bool:
         """Check an active command's deadline, ownership/map, and robot liveness.
 
         Args:
@@ -400,14 +400,14 @@ class RobotActionService:
             preserved. Dependency failures propagate to the calling boundary.
         """
         if self.clock() >= datetime.fromisoformat(record["deadline"]):
-            await self._finish(record, CommandStatus.TIMED_OUT, "Acknowledgement or dispatch timeout")
+            await self._finish_command(record, CommandStatus.TIMED_OUT, "Acknowledgement or dispatch timeout")
             return False
-        context = await self._context(UUID(record["robot_id"]))
+        context = await self._get_robot_context(UUID(record["robot_id"]))
         if context is None or str(context["group_id"]) != record["group_id"] or str(context["map_id"]) != record["map_id"]:
-            await self._finish(record, CommandStatus.CANCELLED, "Robot ownership or map changed")
+            await self._finish_command(record, CommandStatus.CANCELLED, "Robot ownership or map changed")
             return False
-        if not await self._live(context):
-            await self._finish(record, CommandStatus.CANCELLED, "Robot is offline or stale")
+        if not await self._is_robot_online(context):
+            await self._finish_command(record, CommandStatus.CANCELLED, "Robot is offline or stale")
             return False
         return True
 
@@ -432,43 +432,19 @@ class RobotActionService:
         active_command = await self.robot_command_store.active(message.robot_id)
         if active_command is None:
             return
-        saved_fields = {field: active_command[field] for field in RobotCommand.model_fields}
-        message_fields = message.model_dump(mode="json", exclude={"ack"})
-        if saved_fields != message_fields or not await self._eligible(active_command):
+        saved_command = {field: active_command[field] for field in RobotCommand.model_fields}
+        received_command = message.model_dump(mode="json", exclude={"ack"})
+        if saved_command != received_command or not await self._can_process_command(active_command):
             return
         if isinstance(message, RobotAcknowledgement):
-            if active_command["status"] != CommandStatus.AWAITING_ACK.value:
-                return
-            if message.ack:
-                confirmed_position: RobotPositionRecord = {
-                    "robot_id": active_command["robot_id"],
-                    "group_id": active_command["group_id"],
-                    "map_id": active_command["map_id"],
-                    **active_command["target"],
-                    "command_id": active_command["command_id"],
-                    "updated_at": self.clock().isoformat(),
-                }
-                await self._finish(active_command, CommandStatus.SUCCEEDED, position=confirmed_position)
-            elif message.attempt >= 4:
-                await self._finish(active_command, CommandStatus.FAILED, "Robot action failed after three retries")
-            else:
-                retry_command: RobotCommandRecord = {
-                    **active_command,
-                    "attempt": message.attempt + 1,
-                    "status": CommandStatus.QUEUED.value,
-                    "updated_at": self.clock().isoformat(),
-                    "deadline": self._deadline(),
-                }
-                if await self.robot_command_store.transition(active_command, retry_command):
-                    # On publication failure reconciliation resumes this saved intent.
-                    await self.robot_action_topic.publish_command(self._envelope(retry_command))
+            await self._handle_ack(message, active_command)
             return
         if active_command["status"] == CommandStatus.QUEUED.value:
             pending_command: RobotCommandRecord = {
                 **active_command,
                 "status": CommandStatus.AWAITING_ACK.value,
                 "updated_at": self.clock().isoformat(),
-                "deadline": self._deadline(),
+                "deadline": self._command_deadline(),
             }
             if not await self.robot_command_store.transition(active_command, pending_command):
                 return
@@ -492,8 +468,48 @@ class RobotActionService:
             await self.robot_command_store.transition(pending_command, active_command)
             raise
 
+    async def _handle_ack(self, message: RobotAcknowledgement, command: RobotCommandRecord) -> None:
+        """Apply an execution acknowledgement only while awaiting one."""
+        if command["status"] != CommandStatus.AWAITING_ACK.value:
+            return
+        if message.ack:
+            await self._handle_successful_ack(command)
+        elif message.attempt >= 4:
+            await self._handle_final_failed_ack(command)
+        else:
+            await self._handle_retry_ack(command, message.attempt)
+
+    async def _handle_successful_ack(self, command: RobotCommandRecord) -> None:
+        """Finish a successful command and save its confirmed position."""
+        confirmed_position: RobotPositionRecord = {
+            "robot_id": command["robot_id"],
+            "group_id": command["group_id"],
+            "map_id": command["map_id"],
+            **command["target"],
+            "command_id": command["command_id"],
+            "updated_at": self.clock().isoformat(),
+        }
+        await self._finish_command(command, CommandStatus.SUCCEEDED, position=confirmed_position)
+
+    async def _handle_final_failed_ack(self, command: RobotCommandRecord) -> None:
+        """Finish a command after its final failed attempt."""
+        await self._finish_command(command, CommandStatus.FAILED, "Robot action failed after three retries")
+
+    async def _handle_retry_ack(self, command: RobotCommandRecord, attempt: int) -> None:
+        """Save and publish the next attempt after a failed acknowledgement."""
+        retry_command: RobotCommandRecord = {
+            **command,
+            "attempt": attempt + 1,
+            "status": CommandStatus.QUEUED.value,
+            "updated_at": self.clock().isoformat(),
+            "deadline": self._command_deadline(),
+        }
+        if await self.robot_command_store.transition(command, retry_command):
+            # On publication failure reconciliation resumes this saved intent.
+            await self.robot_action_topic.publish_command(self._to_robot_command(retry_command))
+
     @staticmethod
-    def _envelope(record: RobotCommandRecord) -> RobotCommand:
+    def _to_robot_command(record: RobotCommandRecord) -> RobotCommand:
         """Extract the device-facing command fields from an internal record.
 
         Args:
@@ -521,11 +537,16 @@ class RobotActionService:
         caller or the background reconciler's error handling.
         """
         record = await self.robot_command_store.active(robot_id)
-        if record is not None and await self._eligible(record):
-            if record["status"] == CommandStatus.QUEUED.value or (
-                record["status"] == CommandStatus.AWAITING_ACK.value and not await self.robot_command_store.dispatched(record)
-            ):
-                await self.robot_action_topic.publish_command(self._envelope(record))
+        if record is None:
+            return
+        can_process_command = await self._can_process_command(record)
+        if not can_process_command:
+            return
+        if record["status"] not in (CommandStatus.QUEUED.value, CommandStatus.AWAITING_ACK.value):
+            return
+        if record["status"] == CommandStatus.AWAITING_ACK.value and await self.robot_command_store.dispatched(record):
+            return
+        await self.robot_action_topic.publish_command(self._to_robot_command(record))
 
     async def start(self) -> None:
         """Restore action-queue subscriptions for all registered robot UUIDs.
@@ -535,8 +556,8 @@ class RobotActionService:
         subscription errors propagate to the application's background startup
         retry loop. This method does not dispatch commands or move positions.
         """
-        ids = await self.registry.transaction_wrapper(lambda session: self.registry.robot_action_repo().list_robot_ids(session))
-        for robot_id in ids:
+        robot_ids = await self.registry.transaction_wrapper(lambda session: self.registry.robot_action_repo().list_robot_ids(session))
+        for robot_id in robot_ids:
             await self.robot_action_topic.ensure_robot(robot_id)
 
     async def run_reconciler(self) -> None:
