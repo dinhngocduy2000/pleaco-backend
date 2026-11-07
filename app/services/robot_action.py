@@ -437,31 +437,7 @@ class RobotActionService:
         if saved_command != received_command or not await self._can_process_command(active_command):
             return
         if isinstance(message, RobotAcknowledgement):
-            if active_command["status"] != CommandStatus.AWAITING_ACK.value:
-                return
-            if message.ack:
-                confirmed_position: RobotPositionRecord = {
-                    "robot_id": active_command["robot_id"],
-                    "group_id": active_command["group_id"],
-                    "map_id": active_command["map_id"],
-                    **active_command["target"],
-                    "command_id": active_command["command_id"],
-                    "updated_at": self.clock().isoformat(),
-                }
-                await self._finish_command(active_command, CommandStatus.SUCCEEDED, position=confirmed_position)
-            elif message.attempt >= 4:
-                await self._finish_command(active_command, CommandStatus.FAILED, "Robot action failed after three retries")
-            else:
-                retry_command: RobotCommandRecord = {
-                    **active_command,
-                    "attempt": message.attempt + 1,
-                    "status": CommandStatus.QUEUED.value,
-                    "updated_at": self.clock().isoformat(),
-                    "deadline": self._command_deadline(),
-                }
-                if await self.robot_command_store.transition(active_command, retry_command):
-                    # On publication failure reconciliation resumes this saved intent.
-                    await self.robot_action_topic.publish_command(self._to_robot_command(retry_command))
+            await self._handle_ack(message, active_command)
             return
         if active_command["status"] == CommandStatus.QUEUED.value:
             pending_command: RobotCommandRecord = {
@@ -492,6 +468,46 @@ class RobotActionService:
             await self.robot_command_store.transition(pending_command, active_command)
             raise
 
+    async def _handle_ack(self, message: RobotAcknowledgement, command: RobotCommandRecord) -> None:
+        """Apply an execution acknowledgement only while awaiting one."""
+        if command["status"] != CommandStatus.AWAITING_ACK.value:
+            return
+        if message.ack:
+            await self._handle_successful_ack(command)
+        elif message.attempt >= 4:
+            await self._handle_final_failed_ack(command)
+        else:
+            await self._handle_retry_ack(command, message.attempt)
+
+    async def _handle_successful_ack(self, command: RobotCommandRecord) -> None:
+        """Finish a successful command and save its confirmed position."""
+        confirmed_position: RobotPositionRecord = {
+            "robot_id": command["robot_id"],
+            "group_id": command["group_id"],
+            "map_id": command["map_id"],
+            **command["target"],
+            "command_id": command["command_id"],
+            "updated_at": self.clock().isoformat(),
+        }
+        await self._finish_command(command, CommandStatus.SUCCEEDED, position=confirmed_position)
+
+    async def _handle_final_failed_ack(self, command: RobotCommandRecord) -> None:
+        """Finish a command after its final failed attempt."""
+        await self._finish_command(command, CommandStatus.FAILED, "Robot action failed after three retries")
+
+    async def _handle_retry_ack(self, command: RobotCommandRecord, attempt: int) -> None:
+        """Save and publish the next attempt after a failed acknowledgement."""
+        retry_command: RobotCommandRecord = {
+            **command,
+            "attempt": attempt + 1,
+            "status": CommandStatus.QUEUED.value,
+            "updated_at": self.clock().isoformat(),
+            "deadline": self._command_deadline(),
+        }
+        if await self.robot_command_store.transition(command, retry_command):
+            # On publication failure reconciliation resumes this saved intent.
+            await self.robot_action_topic.publish_command(self._to_robot_command(retry_command))
+
     @staticmethod
     def _to_robot_command(record: RobotCommandRecord) -> RobotCommand:
         """Extract the device-facing command fields from an internal record.
@@ -521,11 +537,16 @@ class RobotActionService:
         caller or the background reconciler's error handling.
         """
         record = await self.robot_command_store.active(robot_id)
-        if record is not None and await self._can_process_command(record):
-            if record["status"] == CommandStatus.QUEUED.value or (
-                record["status"] == CommandStatus.AWAITING_ACK.value and not await self.robot_command_store.dispatched(record)
-            ):
-                await self.robot_action_topic.publish_command(self._to_robot_command(record))
+        if record is None:
+            return
+        can_process_command = await self._can_process_command(record)
+        if not can_process_command:
+            return
+        if record["status"] not in (CommandStatus.QUEUED.value, CommandStatus.AWAITING_ACK.value):
+            return
+        if record["status"] == CommandStatus.AWAITING_ACK.value and await self.robot_command_store.dispatched(record):
+            return
+        await self.robot_action_topic.publish_command(self._to_robot_command(record))
 
     async def start(self) -> None:
         """Restore action-queue subscriptions for all registered robot UUIDs.
