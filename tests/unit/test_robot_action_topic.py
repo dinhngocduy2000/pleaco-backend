@@ -20,24 +20,32 @@ def command() -> RobotCommand:
 
 
 @pytest.mark.asyncio
-async def test_topic_uses_one_durable_serial_queue_per_robot() -> None:
+async def test_topic_uses_two_durable_shared_serial_queues() -> None:
     client = SimpleNamespace(subscribe=AsyncMock(), publish=AsyncMock(return_value="broker-id"))
     robot_action_topic = RobotActionTopic(client)
     payload = command()
-    await asyncio.gather(robot_action_topic.ensure_robot(payload.robot_id), robot_action_topic.ensure_robot(payload.robot_id))
-    client.subscribe.assert_awaited_once()
-    options = client.subscribe.call_args.kwargs
-    name = f"pleaco-backend.robot-actions.{payload.robot_id}"
-    assert options["exchange_name"] == "pleco.robot.actions"
-    assert options["routing_key"] == f"robot.{payload.robot_id}.*"
-    assert options["queue_name"] == name
-    assert options["durable"] is True
-    assert options["prefetch_count"] == 1
-    assert options["queue_arguments"] == {"x-single-active-consumer": True, "x-dead-letter-exchange": name + ".dlx"}
-    assert options["retry_queue_arguments"] == {"x-message-ttl": 5000, "x-dead-letter-exchange": "", "x-dead-letter-routing-key": name}
+    await asyncio.gather(robot_action_topic.start(), robot_action_topic.start())
+    await robot_action_topic.start()
+    assert client.subscribe.await_count == 2
+    assert client.subscribe.await_args_list[0].kwargs["queue_name"] == robot_action_topic.ack_queue_name
+    subscriptions = {call.kwargs["queue_name"]: call.kwargs for call in client.subscribe.await_args_list}
+    assert set(subscriptions) == {
+        "pleaco-backend.robot-actions.commands",
+        "pleaco-backend.robot-actions.acks",
+    }
+    for lane, suffix in (("commands", "command"), ("acks", "ack")):
+        name = f"pleaco-backend.robot-actions.{lane}"
+        options = subscriptions[name]
+        assert options["exchange_name"] == "pleco.robot.actions"
+        assert options["routing_key"] == f"robot.*.{suffix}"
+        assert options["durable"] is True
+        assert options["prefetch_count"] == 1
+        assert options["queue_arguments"] == {"x-single-active-consumer": True, "x-dead-letter-exchange": name + ".dlx"}
+        assert options["retry_queue_arguments"] == {"x-message-ttl": 5000, "x-dead-letter-exchange": "", "x-dead-letter-routing-key": name}
     await robot_action_topic.publish_command(payload)
     assert client.publish.call_args.kwargs["routing_key"] == f"robot.{payload.robot_id}.command"
     assert client.publish.call_args.kwargs["correlation_id"] == str(payload.command_id)
+    assert client.subscribe.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -47,11 +55,15 @@ async def test_queue_validation_rejects_mismatch_and_accepts_typed_ack() -> None
     robot_action_topic.set_handler(handler)
     payload = command()
     ack = RobotAcknowledgement(**payload.model_dump(), ack=True)
-    await robot_action_topic._handle_message(TopicMessage(payload=ack.model_dump(mode="json"), routing_key=f"robot.{uuid4()}.ack"))
-    await robot_action_topic._handle_message(TopicMessage(payload={}, routing_key=f"robot.{payload.robot_id}.ack"))
+    await robot_action_topic._handle_ack(TopicMessage(payload=ack.model_dump(mode="json"), routing_key=f"robot.{uuid4()}.ack"))
+    await robot_action_topic._handle_ack(TopicMessage(payload={}, routing_key=f"robot.{payload.robot_id}.ack"))
+    await robot_action_topic._handle_ack(TopicMessage(payload=ack.model_dump(mode="json"), routing_key=f"robot.{payload.robot_id}.command"))
+    await robot_action_topic._handle_command(TopicMessage(payload=ack.model_dump(mode="json"), routing_key=f"robot.{payload.robot_id}.ack"))
     handler.assert_not_awaited()
-    await robot_action_topic._handle_message(TopicMessage(payload=ack.model_dump(mode="json"), routing_key=f"robot.{payload.robot_id}.ack"))
+    await robot_action_topic._handle_ack(TopicMessage(payload=ack.model_dump(mode="json"), routing_key=f"robot.{payload.robot_id}.ack"))
     assert isinstance(handler.call_args.args[0], RobotAcknowledgement)
+    await robot_action_topic._handle_command(TopicMessage(payload=payload.model_dump(mode="json"), routing_key=f"robot.{payload.robot_id}.command"))
+    assert type(handler.call_args.args[0]) is RobotCommand
 
 
 @pytest.mark.asyncio

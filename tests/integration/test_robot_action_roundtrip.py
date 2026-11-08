@@ -170,11 +170,11 @@ async def harness(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SimpleNamesp
         connection = await aio_pika.connect_robust(AMQP_URL)
         try:
             channel = await connection.channel()
-            name = f"pleaco-backend.robot-actions.{robot_id}"
-            for suffix in ("", ".retry", ".dlq"):
-                queue = await channel.get_queue(name + suffix, ensure=False)
-                await queue.delete(if_unused=False, if_empty=False)
-            await channel.exchange_delete(name + ".dlx", if_unused=False)
+            for name in (RobotActionTopic.command_queue_name, RobotActionTopic.ack_queue_name):
+                for suffix in ("", ".retry", ".dlq"):
+                    queue = await channel.get_queue(name + suffix, ensure=False)
+                    await queue.delete(if_unused=False, if_empty=False)
+                await channel.exchange_delete(name + ".dlx", if_unused=False)
         finally:
             await connection.close()
         keys = [key async for key in raw_redis.scan_iter(match=f"robot:{robot_id}:*")]
@@ -292,6 +292,25 @@ async def test_atomic_success_racing_duplicate_delivery(harness: SimpleNamespace
     position = await harness.robot_command_store.position(harness.robot_id)
     assert (position["x"], position["y"]) == (5, 6)
     assert await harness.robot_command_store.active(harness.robot_id) is None
+
+
+@pytest.mark.asyncio
+async def test_ack_before_dispatch_marker_does_not_write_stale_marker(harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(harness.robot_action_topic, "publish_command", AsyncMock(return_value="queued"))
+    info = await harness.robot_action_service.submit(request=request(), **harness.auth)
+    command = RobotCommand.model_validate({key: getattr(info, key) for key in RobotCommand.model_fields})
+    acknowledgement = RobotAcknowledgement(**command.model_dump(), ack=True)
+
+    async def acknowledge_before_publish_returns(*_args: object, **_kwargs: object) -> None:
+        await harness.robot_action_service.process_message(acknowledgement)
+
+    monkeypatch.setattr(harness.robot_action_mqtt_gateway, "publish_command", acknowledge_before_publish_returns)
+    await harness.robot_action_service.process_message(command)
+    record = await harness.robot_command_store.get(command.robot_id, command.command_id)
+    assert record["status"] == "SUCCEEDED"
+    assert await harness.robot_command_store.active(command.robot_id) is None
+    assert await harness.robot_command_store.position(command.robot_id) is not None
+    assert await harness.raw_redis.get(harness.robot_command_store.dispatch_key(record)) is None
 
 
 @pytest.mark.asyncio

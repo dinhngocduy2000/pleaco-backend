@@ -27,6 +27,7 @@ from app.common.schemas.robot_action import (
     CleaningAction, RobotAcknowledgement, RobotCommand, RobotCommandInfo,
     RobotCommandRecord, RobotCommandRequest, RobotPositionRecord,
 )
+from app.core.config import settings
 from app.core.rbac.permissions import PermissionService
 from app.handler.robot_action import RobotActionHandler
 from app.router.robot_action import RobotActionRouter
@@ -57,8 +58,11 @@ class MemoryStore:
     async def dispatched(self, record: RobotCommandRecord) -> bool:
         return (record["command_id"], record["attempt"]) in self.dispatches
 
-    async def mark_dispatched(self, record: RobotCommandRecord) -> None:
+    async def mark_dispatched(self, record: RobotCommandRecord) -> bool:
+        if await self.active(record["robot_id"]) != record:
+            return False
         self.dispatches.add((record["command_id"], record["attempt"]))
+        return True
 
     async def reserve(self, record: RobotCommandRecord, position: RobotPositionRecord | None) -> bool:
         robot_id = record["robot_id"]
@@ -94,9 +98,9 @@ def setup(role: GroupRole | None = GroupRole.MEMBER) -> SimpleNamespace:
                                  is_action_executable=PermissionService.is_action_executable)
     robot_command_store = MemoryStore()
     robot_command_store.redis_client.get.return_value = now[0].isoformat()
-    robot_action_topic = SimpleNamespace(set_handler=lambda handler: None, ensure_robot=AsyncMock(),
-                            publish_command=AsyncMock())
-    robot_action_mqtt_gateway = SimpleNamespace(publish_command=AsyncMock())
+    robot_action_topic = SimpleNamespace(set_handler=lambda handler: None, ready=True,
+                            start=AsyncMock(), publish_command=AsyncMock())
+    robot_action_mqtt_gateway = SimpleNamespace(ready=True, publish_command=AsyncMock())
     robot_action_service = RobotActionService(registry, permission_service, robot_command_store, robot_action_topic, robot_action_mqtt_gateway, clock=lambda: now[0])
     credential = SimpleNamespace(id=uuid4(), active_group_id=group_id)
     kwargs = dict(robot_id=robot_id, credential=credential, group_id=group_id,
@@ -221,6 +225,43 @@ async def test_wrong_attempt_or_action_ack_cannot_move_position() -> None:
     altered["distance"] = "2m"
     await s.robot_action_service.process_message(ack(command, action=altered))
     assert await s.robot_command_store.position(info.robot_id) is None
+
+
+@pytest.mark.asyncio
+async def test_ack_before_dispatch_marker_does_not_restore_active_command() -> None:
+    s = setup()
+    info = await submit(s)
+    command = envelope(info)
+
+    async def acknowledge_during_publish(*_args: object, **_kwargs: object) -> None:
+        await s.robot_action_service.process_message(ack(command))
+
+    s.robot_action_mqtt_gateway.publish_command.side_effect = acknowledge_during_publish
+    await s.robot_action_service.process_message(command)
+    assert (await s.robot_command_store.get(info.robot_id, info.command_id))["status"] == "SUCCEEDED"
+    assert await s.robot_command_store.active(info.robot_id) is None
+    assert await s.robot_command_store.position(info.robot_id) is not None
+    assert (str(info.command_id), 1) not in s.robot_command_store.dispatches
+
+
+@pytest.mark.asyncio
+async def test_command_admission_requires_shared_consumers_and_respects_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    s = setup()
+    s.robot_action_topic.ready = False
+    with pytest.raises(BadRequestException) as unavailable:
+        await submit(s)
+    assert unavailable.value.status_code == 503
+    s.robot_action_topic.ready = True
+    s.robot_action_mqtt_gateway.ready = False
+    with pytest.raises(BadRequestException) as mqtt_unavailable:
+        await submit(s)
+    assert mqtt_unavailable.value.status_code == 503
+    s.robot_action_mqtt_gateway.ready = True
+    monkeypatch.setattr(settings, "ROBOT_COMMANDS_PAUSED", True)
+    with pytest.raises(BadRequestException) as paused:
+        await submit(s)
+    assert paused.value.status_code == 503
+    assert not s.robot_command_store.records
 
 
 @pytest.mark.asyncio
