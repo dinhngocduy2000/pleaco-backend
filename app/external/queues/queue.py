@@ -194,6 +194,12 @@ class RabbitMQClient:
             raise
         subscription = TopicSubscription(queue, consumer_tag, channel)
         self._subscriptions.append(subscription)
+        logger.info(
+            msg=(
+                f"RabbitMQ subscribed to exchange '{exchange_name}' "
+                f"queue '{queue_name}' routing key '{routing_key}'"
+            )
+        )
         return subscription
 
     async def _declare_subscription_topology(

@@ -155,17 +155,17 @@ def application_fixture(monkeypatch: pytest.MonkeyPatch, *, mqtt_fails_once: boo
     blocked = asyncio.Event()
 
     async def subscribe(*, queue_name: str, **_kwargs: object) -> SimpleNamespace:
-        robot = queue_name.rsplit(".", 1)[-1]
-        attempts[robot] = attempts.get(robot, 0) + 1
+        lane = queue_name.rsplit(".", 1)[-1]
+        attempts[lane] = attempts.get(lane, 0) + 1
         if block_setup:
             blocked.set()
             try:
                 await asyncio.Event().wait()
             finally:
                 events.append("setup_cancelled")
-        if robot == str(registered[1]) and attempts[robot] == 1:
+        if lane == "acks" and attempts[lane] == 1:
             raise ConnectionError("Broker unavailable")
-        if robot == str(registered[1]):
+        if lane == "acks":
             recovery.set()
         return SimpleNamespace()
 
@@ -182,7 +182,7 @@ def application_fixture(monkeypatch: pytest.MonkeyPatch, *, mqtt_fails_once: boo
     monkeypatch.setattr(main, "RedisClient", lambda: SimpleNamespace())
     monkeypatch.setattr(main, "RabbitMQClient", lambda: rabbitmq_client)
     monkeypatch.setattr(main.Registry, "transaction_wrapper", transaction)
-    monkeypatch.setattr(RobotActionRepository, "list_robot_ids", AsyncMock(return_value=registered))
+    monkeypatch.setattr(RobotActionRepository, "list_robot_ids", AsyncMock(side_effect=AssertionError("Robot inventory must not be queried for subscriptions")))
     monkeypatch.setattr(main, "RobotActionMqttGateway", lambda *args: robot_action_mqtt_gateway)
     monkeypatch.setattr(main, "RobotStatusMqttIngestion", lambda *args: SimpleNamespace(start=AsyncMock(), stop=AsyncMock()))
     monkeypatch.setattr(main, "init_topics", AsyncMock())
@@ -198,7 +198,7 @@ def application_fixture(monkeypatch: pytest.MonkeyPatch, *, mqtt_fails_once: boo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mqtt_fails_once", [False, True])
-async def test_actual_application_startup_keeps_auth_routes_and_recovers_partial_robot_setup(monkeypatch: pytest.MonkeyPatch, mqtt_fails_once: bool) -> None:
+async def test_actual_application_startup_keeps_auth_routes_and_recovers_partial_shared_setup(monkeypatch: pytest.MonkeyPatch, mqtt_fails_once: bool) -> None:
     setup = application_fixture(monkeypatch, mqtt_fails_once=mqtt_fails_once)
     await setup.app.router.startup()
     try:
@@ -211,7 +211,7 @@ async def test_actual_application_startup_keeps_auth_routes_and_recovers_partial
             assert response.status_code == 401
         await asyncio.wait_for(setup.recovery.wait(), 1)
         await asyncio.wait_for(setup.app.state.robot_command_startup_task, 1)
-        assert setup.attempts == {str(setup.registered[0]): 1, str(setup.registered[1]): 2}
+        assert setup.attempts == {"commands": 1, "acks": 2}
         assert setup.app.state.robot_command_reconciler_task is not None
     finally:
         await setup.app.router.shutdown()
