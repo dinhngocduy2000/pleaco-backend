@@ -17,8 +17,8 @@ async def start_robot_commands(
 ) -> None:
     """Restore command transports without gating the HTTP application.
 
-    Topic subscriptions cache successful registrations. A partially failed
-    pass retries missing robots without replacing working consumers.
+    Shared topic subscriptions cache successful registrations. A partially
+    failed pass retries only the missing consumer.
     """
     while True:
         try:

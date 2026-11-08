@@ -113,8 +113,18 @@ class RobotCommandStore:
     async def dispatched(self, command: RobotCommandRecord) -> bool:
         return bool(await self.redis_client.get(self.dispatch_key(command)))
 
-    async def mark_dispatched(self, command: RobotCommandRecord) -> None:
-        await self.redis_client.set(self.dispatch_key(command), "1", expire=self.ttl)
+    async def mark_dispatched(self, command: RobotCommandRecord) -> bool:
+        """Record publication only while this exact attempt remains active."""
+        return bool(await self.redis_client.eval(
+            """
+            if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+            if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
+            return redis.call('SET', KEYS[3], '1', 'EX', ARGV[3]) and 1 or 0
+            """, 3, self.active_key(command["robot_id"]),
+            self.command_key(command["robot_id"], command["command_id"]),
+            self.dispatch_key(command), command["command_id"],
+            self.encode(command), self.ttl,
+        ))
 
     async def active_robot_ids(self) -> AsyncIterator[UUID]:
         async for active_command_key in self.redis_client.scan_iter("robot:*:active_command"):

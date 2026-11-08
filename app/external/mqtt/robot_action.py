@@ -50,6 +50,11 @@ class RobotActionMqttGateway:
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
 
+    @property
+    def ready(self) -> bool:
+        """Report whether the ACK listener is running and connected."""
+        return self._started and self._client.is_connected()
+
     async def start(self) -> None:
         if self._started:
             return

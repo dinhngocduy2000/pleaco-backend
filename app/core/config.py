@@ -76,6 +76,7 @@ class Settings(BaseAppSettings):
     MQTT_USERNAME: str = ""
     MQTT_PASSWORD: str = ""
     ROBOT_COMMAND_TIMEOUT_SECONDS: PositiveInt = 60
+    ROBOT_COMMANDS_PAUSED: bool = False
 
     # Google OAuth (for Sign in with Google)
     GOOGLE_CLIENT_ID: str = ""

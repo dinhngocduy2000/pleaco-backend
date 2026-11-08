@@ -269,8 +269,10 @@ class RobotActionService:
                 target_y=target_y,
             ),
         )
-        # Ensure routing exists before reserving/publishing command intent.
-        await self.robot_action_topic.ensure_robot(robot_id)
+        if settings.ROBOT_COMMANDS_PAUSED:
+            raise BadRequestException(message="Robot commands are temporarily paused", status_code=503)
+        if not self.robot_action_topic.ready or not self.robot_action_mqtt_gateway.ready:
+            raise BadRequestException(message="Robot command transport is unavailable", status_code=503)
         created_at = self.clock().isoformat()
         command = RobotCommand(robot_id=robot_id, command_id=uuid4(), attempt=1, action=request.action)
         record: RobotCommandRecord = {
@@ -549,16 +551,8 @@ class RobotActionService:
         await self.robot_action_topic.publish_command(self._to_robot_command(record))
 
     async def start(self) -> None:
-        """Restore action-queue subscriptions for all registered robot UUIDs.
-
-        Successful subscriptions are cached by the topic adapter, so retrying a
-        partially failed startup preserves existing consumers. Repository and
-        subscription errors propagate to the application's background startup
-        retry loop. This method does not dispatch commands or move positions.
-        """
-        robot_ids = await self.registry.transaction_wrapper(lambda session: self.registry.robot_action_repo().list_robot_ids(session))
-        for robot_id in robot_ids:
-            await self.robot_action_topic.ensure_robot(robot_id)
+        """Start the two shared action consumers without enumerating robots."""
+        await self.robot_action_topic.start()
 
     async def run_reconciler(self) -> None:
         """Reconcile Redis-backed pending commands in a one-second loop.
