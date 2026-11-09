@@ -2,16 +2,11 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from uuid import UUID
 
-from pydantic import ValidationError
-
-from app.common.middleware.logger import Logger
 from app.common.schemas.robot_action import RobotAcknowledgement, RobotCommand
+from app.common.utils.robot_actions import handle_robot_action_message, publish_robot_action
 from app.external.queues.queue import RabbitMQClient, TopicMessage
 from app.external.queues.topics.base import Topic
-
-logger = Logger()
 
 
 class RobotActionTopic(Topic):
@@ -23,10 +18,22 @@ class RobotActionTopic(Topic):
         super().__init__(rabbitmq_client, self.exchange_name)
         self._subscriptions = {}
         self._lock = asyncio.Lock()
-        self._handler = None
+        self._command_handler: Callable[[RobotCommand], Awaitable[None]] | None = None
+        self._ack_handler: Callable[[RobotAcknowledgement], Awaitable[None]] | None = (
+            None
+        )
+
+    def set_handlers(
+        self,
+        command_handler: Callable[[RobotCommand], Awaitable[None]],
+        ack_handler: Callable[[RobotAcknowledgement], Awaitable[None]],
+    ) -> None:
+        self._command_handler = command_handler
+        self._ack_handler = ack_handler
 
     def set_handler(self, handler: Callable[[RobotCommand], Awaitable[None]]) -> None:
-        self._handler = handler
+        """Keep the original single-handler registration for existing callers."""
+        self.set_handlers(handler, handler)
 
     @property
     def ready(self) -> bool:
@@ -60,33 +67,21 @@ class RobotActionTopic(Topic):
                 self._subscriptions[queue_name] = subscription
 
     async def publish_command(self, command: RobotCommand) -> str:
-        return await self.publish(
-            f"robot.{command.robot_id}.command", command,
-            correlation_id=str(command.command_id),
-        )
+        return await publish_robot_action(self, command, "command")
 
     async def publish_ack(self, ack: RobotAcknowledgement) -> str:
-        return await self.publish(
-            f"robot.{ack.robot_id}.ack", ack,
-            correlation_id=str(ack.command_id),
-        )
+        return await publish_robot_action(self, ack, "ack")
 
     async def _handle_command(self, message: TopicMessage) -> None:
-        await self._handle_message(message, expected_kind="command")
+        await self._handle_message(message, expected_queue_type="command")
 
     async def _handle_ack(self, message: TopicMessage) -> None:
-        await self._handle_message(message, expected_kind="ack")
+        await self._handle_message(message, expected_queue_type="ack")
 
-    async def _handle_message(self, message: TopicMessage, *, expected_kind: str) -> None:
-        try:
-            parts = message.routing_key.split(".")
-            if len(parts) != 3 or parts[0] != "robot" or parts[2] != expected_kind:
-                raise ValueError("Unexpected robot action route")
-            model = RobotAcknowledgement if expected_kind == "ack" else RobotCommand
-            command = model.model_validate(message.payload)
-            if command.robot_id != UUID(parts[1]):
-                raise ValueError("Robot action route/payload mismatch")
-        except (ValueError, ValidationError):
-            logger.warning(msg="Ignoring invalid queued robot action")
-            return
-        await self._handler(command)
+    async def _handle_message(
+        self, message: TopicMessage, *, expected_queue_type: str
+    ) -> None:
+        await handle_robot_action_message(
+            message, expected_queue_type=expected_queue_type,
+            command_handler=self._command_handler, ack_handler=self._ack_handler,
+        )

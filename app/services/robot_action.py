@@ -17,6 +17,7 @@ from app.common.schemas.robot_action import (
     RobotMovementCoordinates,
 )
 from app.common.schemas.user import Credential
+from app.common.utils.robot_actions import apply_robot_ack, dispatch_robot_command, to_robot_command, validate_active_command
 from app.core.config import settings
 from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
@@ -59,7 +60,7 @@ class RobotActionService:
         self.robot_action_topic = robot_action_topic
         self.robot_action_mqtt_gateway = robot_action_mqtt_gateway
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.robot_action_topic.set_handler(self.process_message)
+        self.robot_action_topic.set_handlers(self.process_command, self._process_movement_ack)
 
     def _command_deadline(self) -> str:
         """Return a new ISO 8601 deadline using the configured command timeout."""
@@ -413,77 +414,54 @@ class RobotActionService:
             return False
         return True
 
-    async def process_message(self, message: RobotCommand) -> None:
-        """Process one validated command or execution ACK from a robot queue.
+    async def _validate_active_command(self, message: RobotCommand) -> RobotCommandRecord | None:
+        """Match an active command and enforce its deadline, ownership, and liveness.
 
-        Match the saved command, attempt, and action before checking eligibility.
-        Ignore unmatched or terminal work. Successful ACKs atomically save the
-        target position; negative ACKs queue the next attempt or fail attempt 4.
-        Dispatch messages send eligible queued or unconfirmed work through MQTT
-        under the saved deadline, recording confirmed transport publication.
-
-        Args:
-            message: RobotCommand to dispatch, or its RobotAcknowledgement
-                subclass containing the execution outcome.
-
-        Transport and persistence errors propagate to the queue consumer's retry
-        policy. MQTT dispatch errors attempt to restore the previous snapshot;
-        retries keep the same command/attempt identity for device deduplication.
-        A transport confirmation alone does not update the robot's position.
+        An ineligible command may be atomically timed out or cancelled.
         """
-        active_command = await self.robot_command_store.active(message.robot_id)
+        return await validate_active_command(message, self.robot_command_store, self._can_process_command)
+
+    async def process_message(self, message: RobotCommand) -> None:
+        """Compatibility entry point for command and movement ACK callers."""
+        if isinstance(message, RobotAcknowledgement):
+            await self._process_movement_ack(message)
+        else:
+            await self.process_command(message)
+
+    async def _process_movement_ack(self, message: RobotAcknowledgement) -> None:
+        await self.process_ack(message, retry_enabled=True, on_success_ack=self._confirmed_position)
+
+    async def process_ack(
+        self, message: RobotAcknowledgement, *, retry_enabled: bool = True,
+        on_success_ack: Callable[[RobotCommandRecord], RobotPositionRecord | None] | None = None,
+    ) -> None:
+        """Apply a validated ACK to the current active command."""
+        command = await self._validate_active_command(message)
+        if command is not None:
+            await apply_robot_ack(
+                message, command, retry_enabled=retry_enabled, on_success_ack=on_success_ack,
+                finish_command=self._finish_command, store=self.robot_command_store,
+                topic=self.robot_action_topic, clock=self.clock, command_deadline=self._command_deadline,
+            )
+
+    async def process_command(self, message: RobotCommand) -> None:
+        """Dispatch eligible queued or unconfirmed work through MQTT.
+
+        Match the active command, attempt, and action first. MQTT errors try to
+        restore the previous snapshot; a redelivery retains the same attempt.
+        """
+        active_command = await self._validate_active_command(message)
         if active_command is None:
             return
-        saved_command = {field: active_command[field] for field in RobotCommand.model_fields}
-        received_command = message.model_dump(mode="json", exclude={"ack"})
-        if saved_command != received_command or not await self._can_process_command(active_command):
-            return
-        if isinstance(message, RobotAcknowledgement):
-            await self._handle_ack(message, active_command)
-            return
-        if active_command["status"] == CommandStatus.QUEUED.value:
-            pending_command: RobotCommandRecord = {
-                **active_command,
-                "status": CommandStatus.AWAITING_ACK.value,
-                "updated_at": self.clock().isoformat(),
-                "deadline": self._command_deadline(),
-            }
-            if not await self.robot_command_store.transition(active_command, pending_command):
-                return
-        elif (
-            active_command["status"] == CommandStatus.AWAITING_ACK.value
-            and not await self.robot_command_store.dispatched(active_command)
-        ):
-            # Recover a crash between saving dispatch intent and confirming
-            # MQTT publication; preserve the original acknowledgement deadline.
-            pending_command = active_command
-        else:
-            return
-        try:
-            await self.robot_action_mqtt_gateway.publish_command(
-                message, deadline=datetime.fromisoformat(pending_command["deadline"])
-            )
-            await self.robot_command_store.mark_dispatched(pending_command)
-        except Exception:
-            # An uncertain MQTT publish may have delivered: same attempt is
-            # deduplicated by the robot, while the original deadline stays bounded.
-            await self.robot_command_store.transition(pending_command, active_command)
-            raise
+        await dispatch_robot_command(
+            message, active_command, store=self.robot_command_store,
+            gateway=self.robot_action_mqtt_gateway, clock=self.clock,
+            command_deadline=self._command_deadline,
+        )
 
-    async def _handle_ack(self, message: RobotAcknowledgement, command: RobotCommandRecord) -> None:
-        """Apply an execution acknowledgement only while awaiting one."""
-        if command["status"] != CommandStatus.AWAITING_ACK.value:
-            return
-        if message.ack:
-            await self._handle_successful_ack(command)
-        elif message.attempt >= 4:
-            await self._handle_final_failed_ack(command)
-        else:
-            await self._handle_retry_ack(command, message.attempt)
-
-    async def _handle_successful_ack(self, command: RobotCommandRecord) -> None:
-        """Finish a successful command and save its confirmed position."""
-        confirmed_position: RobotPositionRecord = {
+    def _confirmed_position(self, command: RobotCommandRecord) -> RobotPositionRecord:
+        """Build confirmed coordinates for an eligible movement ACK."""
+        return {
             "robot_id": command["robot_id"],
             "group_id": command["group_id"],
             "map_id": command["map_id"],
@@ -491,41 +469,6 @@ class RobotActionService:
             "command_id": command["command_id"],
             "updated_at": self.clock().isoformat(),
         }
-        await self._finish_command(command, CommandStatus.SUCCEEDED, position=confirmed_position)
-
-    async def _handle_final_failed_ack(self, command: RobotCommandRecord) -> None:
-        """Finish a command after its final failed attempt."""
-        await self._finish_command(command, CommandStatus.FAILED, "Robot action failed after three retries")
-
-    async def _handle_retry_ack(self, command: RobotCommandRecord, attempt: int) -> None:
-        """Save and publish the next attempt after a failed acknowledgement."""
-        retry_command: RobotCommandRecord = {
-            **command,
-            "attempt": attempt + 1,
-            "status": CommandStatus.QUEUED.value,
-            "updated_at": self.clock().isoformat(),
-            "deadline": self._command_deadline(),
-        }
-        if await self.robot_command_store.transition(command, retry_command):
-            # On publication failure reconciliation resumes this saved intent.
-            await self.robot_action_topic.publish_command(self._to_robot_command(retry_command))
-
-    @staticmethod
-    def _to_robot_command(record: RobotCommandRecord) -> RobotCommand:
-        """Extract the device-facing command fields from an internal record.
-
-        Args:
-            record: Saved command including internal state and navigation facts.
-
-        Returns:
-            RobotCommand: Validated MQTT/RabbitMQ command envelope without
-            backend-only lifecycle, ownership, or coordinate metadata.
-
-        Raises:
-            KeyError: If a required command field is missing from the record.
-            ValidationError: If the extracted command fields are invalid.
-        """
-        return RobotCommand.model_validate({key: record[key] for key in RobotCommand.model_fields})
 
     async def reconcile_robot(self, robot_id: UUID) -> None:
         """Expire, cancel, or recover the active command for one robot.
@@ -548,7 +491,7 @@ class RobotActionService:
             return
         if record["status"] == CommandStatus.AWAITING_ACK.value and await self.robot_command_store.dispatched(record):
             return
-        await self.robot_action_topic.publish_command(self._to_robot_command(record))
+        await self.robot_action_topic.publish_command(to_robot_command(record))
 
     async def start(self) -> None:
         """Start the two shared action consumers without enumerating robots."""
