@@ -7,7 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -98,7 +98,7 @@ def setup(role: GroupRole | None = GroupRole.MEMBER) -> SimpleNamespace:
                                  is_action_executable=PermissionService.is_action_executable)
     robot_command_store = MemoryStore()
     robot_command_store.redis_client.get.return_value = now[0].isoformat()
-    robot_action_topic = SimpleNamespace(set_handler=lambda handler: None, ready=True,
+    robot_action_topic = SimpleNamespace(set_handlers=lambda command_handler, ack_handler: None, ready=True,
                             start=AsyncMock(), publish_command=AsyncMock())
     robot_action_mqtt_gateway = SimpleNamespace(ready=True, publish_command=AsyncMock())
     robot_action_service = RobotActionService(registry, permission_service, robot_command_store, robot_action_topic, robot_action_mqtt_gateway, clock=lambda: now[0])
@@ -190,6 +190,60 @@ async def test_negative_ack_has_four_sends_and_no_position() -> None:
     assert (await s.robot_command_store.get(info.robot_id, info.command_id))["status"] == "FAILED"
     assert await s.robot_command_store.position(info.robot_id) is None
     assert (await submit(s)).command_id != info.command_id
+
+
+@pytest.mark.asyncio
+async def test_new_entry_points_retry_and_movement_position() -> None:
+    s = setup()
+    info = await submit(s)
+    for attempt in range(1, 5):
+        command = envelope(info).model_copy(update={"attempt": attempt})
+        await s.robot_action_service.process_command(command)
+        await s.robot_action_service.process_ack(ack(command, False))
+        await s.robot_action_service.process_ack(ack(command, False))
+    assert s.robot_action_mqtt_gateway.publish_command.await_count == 4
+    assert s.robot_action_topic.publish_command.await_count == 4
+    assert (await s.robot_command_store.get(info.robot_id, info.command_id))["status"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_ack_without_retry_fails_first_attempt() -> None:
+    s = setup()
+    info = await submit(s)
+    command = envelope(info)
+    await s.robot_action_service.process_command(command)
+    await s.robot_action_service.process_ack(ack(command, False), retry_enabled=False)
+    record = await s.robot_command_store.get(info.robot_id, info.command_id)
+    assert record["status"] == "FAILED"
+    assert record["failure_reason"] == "Robot action failed; retries disabled"
+    s.robot_action_topic.publish_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_success_callback_only_for_eligible_ack_and_optional_position() -> None:
+    s = setup()
+    info = await submit(s)
+    command = envelope(info)
+    await s.robot_action_service.process_command(command)
+    callback = Mock(wraps=s.robot_action_service._confirmed_position)
+    await s.robot_action_service.process_ack(ack(command, attempt=2), on_success_ack=callback)
+    await s.robot_action_service.process_ack(ack(command, False), on_success_ack=callback)
+    callback.assert_not_called()
+    await s.robot_action_service.process_command(command.model_copy(update={"attempt": 2}))
+    second = command.model_copy(update={"attempt": 2})
+    await s.robot_action_service.process_ack(ack(second), on_success_ack=callback)
+    callback.assert_called_once()
+    position = await s.robot_command_store.position(info.robot_id)
+    await s.robot_action_service.process_ack(ack(second), on_success_ack=callback)
+    assert await s.robot_command_store.position(info.robot_id) == position
+    callback.assert_called_once()
+
+    next_info = await submit(s)
+    next_command = envelope(next_info)
+    await s.robot_action_service.process_command(next_command)
+    await s.robot_action_service.process_ack(ack(next_command))
+    assert (await s.robot_command_store.get(next_info.robot_id, next_info.command_id))["status"] == "SUCCEEDED"
+    assert await s.robot_command_store.position(info.robot_id) == position
 
 
 @pytest.mark.asyncio

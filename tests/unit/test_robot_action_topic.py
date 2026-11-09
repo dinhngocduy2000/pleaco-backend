@@ -67,6 +67,19 @@ async def test_queue_validation_rejects_mismatch_and_accepts_typed_ack() -> None
 
 
 @pytest.mark.asyncio
+async def test_distinct_typed_handlers_receive_their_own_routes() -> None:
+    topic = RobotActionTopic(SimpleNamespace())
+    command_handler, ack_handler = AsyncMock(), AsyncMock()
+    topic.set_handlers(command_handler, ack_handler)
+    payload = command()
+    acknowledgement = RobotAcknowledgement(**payload.model_dump(), ack=True)
+    await topic._handle_command(TopicMessage(payload=payload.model_dump(mode="json"), routing_key=f"robot.{payload.robot_id}.command"))
+    await topic._handle_ack(TopicMessage(payload=acknowledgement.model_dump(mode="json"), routing_key=f"robot.{payload.robot_id}.ack"))
+    assert type(command_handler.await_args.args[0]) is RobotCommand
+    assert type(ack_handler.await_args.args[0]) is RobotAcknowledgement
+
+
+@pytest.mark.asyncio
 async def test_mqtt_ingress_requires_valid_identity_and_pending_command() -> None:
     payload = command()
     ack = RobotAcknowledgement(**payload.model_dump(), ack=True)
