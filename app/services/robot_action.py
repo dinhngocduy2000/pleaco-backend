@@ -76,6 +76,10 @@ class RobotActionService:
         """Return a new ISO 8601 deadline using the configured command timeout."""
         return (self.clock() + timedelta(seconds=settings.ROBOT_COMMAND_TIMEOUT_SECONDS)).isoformat()
 
+    async def _publish_loop_command(self, command: RobotCommand) -> None:
+        await self.robot_action_topic.publish_command(command)
+        logger.info(msg=f"Robot loop payload attempt={command.attempt} payload={command.model_dump_json()}")
+
     async def _get_robot_context(self, robot_id: UUID) -> RobotActionContext | None:
         """Load persisted robot, map, and docking facts in a short transaction.
 
@@ -347,7 +351,10 @@ class RobotActionService:
             await self._finish_command(record, CommandStatus.FAILED, "No movement direction fits map dimensions")
             return self._command_info((await self.robot_command_store.get(robot_id, command.command_id)) or record)
         try:
-            await self.robot_action_topic.publish_command(command)
+            if loop:
+                await self._publish_loop_command(command)
+            else:
+                await self.robot_action_topic.publish_command(command)
         except Exception:
             # Persisted QUEUED intent is retried by reconciliation, never lost.
             logger.warning(msg=f"Robot command {command.command_id} awaits broker publication")
@@ -532,7 +539,7 @@ class RobotActionService:
         }
         if await self.robot_command_store.transition(command, next_command, position=position):
             try:
-                await self.robot_action_topic.publish_command(to_robot_command(next_command))
+                await self._publish_loop_command(to_robot_command(next_command))
             except Exception:
                 logger.warning(msg=f"Robot loop {message.command_id} awaits broker publication")
 
@@ -596,7 +603,11 @@ class RobotActionService:
             return
         if record["status"] == CommandStatus.AWAITING_ACK.value and await self.robot_command_store.dispatched(record):
             return
-        await self.robot_action_topic.publish_command(to_robot_command(record))
+        command = to_robot_command(record)
+        if record.get("loop"):
+            await self._publish_loop_command(command)
+        else:
+            await self.robot_action_topic.publish_command(command)
 
     async def start(self) -> None:
         """Start the two shared action consumers without enumerating robots."""
