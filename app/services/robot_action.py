@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -14,8 +15,9 @@ from app.common.middleware.logger import Logger
 from app.common.schemas.robot_action import (
     CommandStatus, RobotAcknowledgement, RobotCommand, RobotCommandInfo, RobotPosition,
     RobotActionContext, RobotCommandRecord, RobotCommandRequest, RobotPositionRecord,
-    RobotMovementCoordinates,
+    RobotMovementCoordinates, RobotLoopRequest, CleaningAction,
 )
+from app.common.utils.robot_movement import RectangleBoundary, select_movement
 from app.common.schemas.user import Credential
 from app.common.utils.robot_actions import apply_robot_ack, dispatch_robot_command, to_robot_command, validate_active_command
 from app.core.config import settings
@@ -27,6 +29,14 @@ from app.external.redis.robot_commands import RobotCommandStore
 from app.repository.registry import Registry
 
 logger = Logger()
+
+
+@dataclass(frozen=True)
+class LoopActionResult:
+    action: CleaningAction
+    target_x: Decimal
+    target_y: Decimal
+    no_movement: bool
 
 
 class RobotActionService:
@@ -157,7 +167,7 @@ class RobotActionService:
             raise BadRequestException(message="Robot liveness is unavailable", status_code=503) from error
         if not online:
             raise BadRequestException(message="Robot is offline or stale", status_code=409)
-        if context["map_id"] is None or context["dimension_x"] is None:
+        if context["map_id"] is None or context["dimension_x"] is None or context["dimension_y"] is None:
             raise BadRequestException(message="Robot must have an assigned map")
         await self.reconcile_robot(robot_id)
 
@@ -250,6 +260,42 @@ class RobotActionService:
                 missing map/origin or invalid target; 503 when the initial
                 liveness check cannot access its dependencies.
         """
+        return await self._submit_command(robot_id, request, credential, group_id, loop=False)
+
+    @require_permission(GroupRole.MEMBER)
+    async def submit_loop(
+        self, *, robot_id: UUID, request: RobotLoopRequest,
+        credential: Credential, group_id: UUID | None, ctx: AppContext,
+    ) -> RobotCommandInfo:
+        action = CleaningAction(
+            direction=request.direction, distance=request.distance,
+            is_start=True, is_finish=False,
+        )
+        return await self._submit_command(
+            robot_id, RobotCommandRequest(action=action), credential, group_id, loop=True,
+        )
+
+    def generate_loop_action(
+        self, action: CleaningAction, context: RobotActionContext,
+        origin_x: Decimal, origin_y: Decimal, distance: Decimal,
+    ) -> LoopActionResult:
+        """Select the first loop step and report when no full step fits."""
+        movement = select_movement(
+            RectangleBoundary(context["dimension_x"], context["dimension_y"]),
+            origin_x, origin_y, distance, action.direction,
+            width=context["dimension_x"], height=context["dimension_y"],
+        )
+        if movement is None:
+            return LoopActionResult(action, origin_x, origin_y, True)
+        direction, target_x, target_y = movement
+        return LoopActionResult(
+            action.model_copy(update={"direction": direction}), target_x, target_y, False,
+        )
+
+    async def _submit_command(
+        self, robot_id: UUID, request: RobotCommandRequest,
+        credential: Credential, group_id: UUID | None, *, loop: bool,
+    ) -> RobotCommandInfo:
         context = await self._get_group_robot_context(robot_id, credential, group_id)
         await self._ensure_robot_ready(robot_id=robot_id, context=context)
         position = await self.robot_command_store.position(robot_id)
@@ -259,8 +305,18 @@ class RobotActionService:
             group_id=group_id,
         )
         distance = Decimal(request.action.distance[:-1])
-        step_x, step_y = {"NORTH": (0, 1), "SOUTH": (0, -1), "EAST": (1, 0), "WEST": (-1, 0)}[request.action.direction]
-        target_x, target_y = origin_x + step_x * distance, origin_y + step_y * distance
+        no_movement = False
+        if loop:
+            loop_action = self.generate_loop_action(
+                request.action, context, origin_x, origin_y, distance,
+            )
+            action = loop_action.action
+            target_x, target_y = loop_action.target_x, loop_action.target_y
+            no_movement = loop_action.no_movement
+        else:
+            step_x, step_y = {"NORTH": (0, 1), "SOUTH": (0, -1), "EAST": (1, 0), "WEST": (-1, 0)}[request.action.direction]
+            target_x, target_y = origin_x + step_x * distance, origin_y + step_y * distance
+            action = request.action
         self._validate_movement(
             context=context,
             coordinates=RobotMovementCoordinates(
@@ -275,7 +331,7 @@ class RobotActionService:
         if not self.robot_action_topic.ready or not self.robot_action_mqtt_gateway.ready:
             raise BadRequestException(message="Robot command transport is unavailable", status_code=503)
         created_at = self.clock().isoformat()
-        command = RobotCommand(robot_id=robot_id, command_id=uuid4(), attempt=1, action=request.action)
+        command = RobotCommand(robot_id=robot_id, command_id=uuid4(), attempt=1, action=action)
         record: RobotCommandRecord = {
             **command.model_dump(mode="json"), "group_id": str(group_id),
             "map_id": str(context["map_id"]), "origin": {"x": float(origin_x), "y": float(origin_y)},
@@ -283,8 +339,13 @@ class RobotActionService:
             "status": CommandStatus.QUEUED.value, "created_at": created_at, "updated_at": created_at,
             "deadline": self._command_deadline(), "failure_reason": None,
         }
+        if loop:
+            record["loop"] = True
         if not await self.robot_command_store.reserve(record, position):
             raise BadRequestException(message="Robot is busy or its position changed; retry the request", status_code=409)
+        if no_movement:
+            await self._finish_command(record, CommandStatus.FAILED, "No movement direction fits map dimensions")
+            return self._command_info((await self.robot_command_store.get(robot_id, command.command_id)) or record)
         try:
             await self.robot_action_topic.publish_command(command)
         except Exception:
@@ -429,7 +490,51 @@ class RobotActionService:
             await self.process_command(message)
 
     async def _process_movement_ack(self, message: RobotAcknowledgement) -> None:
+        command = await self._validate_active_command(message)
+        if command is not None and command.get("loop"):
+            await self._process_loop_ack(message, command)
+            return
         await self.process_ack(message, retry_enabled=True, on_success_ack=self._confirmed_position)
+
+    async def _process_loop_ack(self, message: RobotAcknowledgement, command: RobotCommandRecord) -> None:
+        if command["status"] != CommandStatus.AWAITING_ACK.value:
+            return
+        if not message.ack:
+            await self._finish_command(command, CommandStatus.FAILED, "Robot action rejected")
+            return
+        position = self._confirmed_position(command)
+        if message.attempt == 4:
+            if message.action.is_finish:
+                await self._finish_command(command, CommandStatus.SUCCEEDED, position=position)
+            return
+        context = await self._get_robot_context(message.robot_id)
+        if context is None or context["dimension_x"] is None or context["dimension_y"] is None:
+            await self._finish_command(command, CommandStatus.CANCELLED, "Robot map changed")
+            return
+        x, y = Decimal(str(position["x"])), Decimal(str(position["y"]))
+        movement = select_movement(
+            RectangleBoundary(context["dimension_x"], context["dimension_y"]),
+            x, y, Decimal(command["action"]["distance"][:-1]), message.action.direction,
+            width=context["dimension_x"], height=context["dimension_y"],
+        )
+        if movement is None:
+            await self._finish_command(command, CommandStatus.FAILED, "No movement direction fits map dimensions", position=position)
+            return
+        direction, target_x, target_y = movement
+        next_command: RobotCommandRecord = {
+            **command, "attempt": message.attempt + 1,
+            "action": {**command["action"], "direction": direction.value,
+                       "is_start": False, "is_finish": message.attempt == 3},
+            "origin": {"x": float(x), "y": float(y)},
+            "target": {"x": float(target_x), "y": float(target_y)},
+            "status": CommandStatus.QUEUED.value,
+            "updated_at": self.clock().isoformat(), "deadline": self._command_deadline(),
+        }
+        if await self.robot_command_store.transition(command, next_command, position=position):
+            try:
+                await self.robot_action_topic.publish_command(to_robot_command(next_command))
+            except Exception:
+                logger.warning(msg=f"Robot loop {message.command_id} awaits broker publication")
 
     async def process_ack(
         self, message: RobotAcknowledgement, *, retry_enabled: bool = True,

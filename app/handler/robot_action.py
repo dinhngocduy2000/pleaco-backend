@@ -7,7 +7,7 @@ from app.common.enum.context_actions import LIST_BOTS, SEND_ROBOT_COMMAND
 from app.common.exceptions.decorator import exception_handler
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.common import BaseResponse
-from app.common.schemas.robot_action import RobotCommandInfo, RobotCommandRequest, RobotPosition
+from app.common.schemas.robot_action import RobotCommandInfo, RobotCommandRequest, RobotLoopRequest, RobotPosition
 from app.common.schemas.user import Credential
 from app.services.robot_action import RobotActionService
 
@@ -27,6 +27,18 @@ class RobotActionHandler:
             ctx=AppContext(trace_id=uuid4(), action=SEND_ROBOT_COMMAND, actor=credential.id),
         )
         return BaseResponse(data=result, message="Robot command queued", statusCode=202)
+
+    @exception_handler
+    async def submit_loop(
+        self, bot_id: UUID, payload: RobotLoopRequest,
+        credential: Credential = Depends(AuthMiddleware.auth_middleware),
+    ) -> BaseResponse[RobotCommandInfo]:
+        result = await self.robot_action_service.submit_loop(
+            robot_id=bot_id, request=payload, credential=credential,
+            group_id=credential.active_group_id,
+            ctx=AppContext(trace_id=uuid4(), action=SEND_ROBOT_COMMAND, actor=credential.id),
+        )
+        return BaseResponse(data=result, message="Robot loop queued", statusCode=202)
 
     @exception_handler
     async def get_command(
