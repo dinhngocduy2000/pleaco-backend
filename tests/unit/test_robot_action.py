@@ -26,6 +26,7 @@ from app.common.middleware.auth_middleware import AuthMiddleware
 from app.common.schemas.robot_action import (
     CleaningAction, RobotAcknowledgement, RobotCommand, RobotCommandInfo,
     RobotCommandRecord, RobotCommandRequest, RobotPositionRecord,
+    RobotLoopRequest,
 )
 from app.core.config import settings
 from app.core.rbac.permissions import PermissionService
@@ -123,6 +124,141 @@ def envelope(info: RobotCommandInfo) -> RobotCommand:
 
 def ack(command: RobotCommand, success: bool = True, **changes: object) -> RobotAcknowledgement:
     return RobotAcknowledgement.model_validate({**command.model_dump(mode="json"), "ack": success, **changes})
+
+
+@pytest.mark.asyncio
+async def test_four_action_loop_commits_each_step_and_finishes_only_on_fourth() -> None:
+    s = setup()
+    info = await s.robot_action_service.submit_loop(
+        request=RobotLoopRequest(direction="NORTH"), **s.kwargs,
+    )
+    assert info.attempt == 1
+    assert info.action.is_start and not info.action.is_finish
+    for attempt in range(1, 5):
+        record = await s.robot_command_store.get(info.robot_id, info.command_id)
+        command = RobotCommand.model_validate({key: record[key] for key in RobotCommand.model_fields})
+        assert command.attempt == attempt and command.command_id == info.command_id
+        assert (command.action.is_start, command.action.is_finish) == (attempt == 1, attempt == 4)
+        await s.robot_action_service.process_command(command)
+        await asyncio.gather(
+            s.robot_action_service.process_message(ack(command)),
+            s.robot_action_service.process_message(ack(command)),
+        )
+        position = await s.robot_command_store.position(info.robot_id)
+        assert position["y"] == 4 + attempt
+        updated = await s.robot_command_store.get(info.robot_id, info.command_id)
+        assert updated["status"] == ("SUCCEEDED" if attempt == 4 else "QUEUED")
+    assert await s.robot_command_store.active(info.robot_id) is None
+    assert s.robot_action_topic.publish_command.await_count == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_step", [1, 3])
+async def test_loop_nack_stops_without_retry(failed_step: int) -> None:
+    s = setup()
+    info = await s.robot_action_service.submit_loop(
+        request=RobotLoopRequest(direction="NORTH"), **s.kwargs,
+    )
+    for step in range(1, failed_step + 1):
+        record = await s.robot_command_store.get(info.robot_id, info.command_id)
+        command = RobotCommand.model_validate({key: record[key] for key in RobotCommand.model_fields})
+        await s.robot_action_service.process_command(command)
+        await s.robot_action_service.process_message(ack(command, step != failed_step))
+    record = await s.robot_command_store.get(info.robot_id, info.command_id)
+    assert record["status"] == "FAILED"
+    assert s.robot_action_topic.publish_command.await_count == failed_step
+    position = await s.robot_command_store.position(info.robot_id)
+    assert position is None if failed_step == 1 else position["y"] == 4 + failed_step - 1
+
+
+@pytest.mark.asyncio
+async def test_loop_no_direction_fits_fails_without_publication() -> None:
+    s = setup()
+    s.context["dimension_x"] = Decimal("2")
+    s.context["dimension_y"] = Decimal("2")
+    s.context["dock_x"] = s.context["dock_y"] = 1.0
+    info = await s.robot_action_service.submit_loop(
+        request=RobotLoopRequest(direction="NORTH", distance="3m"), **s.kwargs,
+    )
+    assert info.status.value == "FAILED"
+    s.robot_action_topic.publish_command.assert_not_awaited()
+    assert await s.robot_command_store.position(info.robot_id) is None
+
+
+@pytest.mark.asyncio
+async def test_loop_no_next_step_retains_last_confirmed_position() -> None:
+    s = setup()
+    s.context["dimension_x"] = Decimal("1")
+    s.context["dimension_y"] = Decimal("1")
+    s.context["dock_x"] = s.context["dock_y"] = 0.0
+    info = await s.robot_action_service.submit_loop(
+        request=RobotLoopRequest(direction="EAST", distance="1m"), **s.kwargs,
+    )
+    first = envelope(info)
+    await s.robot_action_service.process_command(first)
+    await s.robot_action_service.process_message(ack(first))
+    # Shrink the assigned rectangle after the first step so no full move fits.
+    s.context["dimension_x"] = Decimal("0")
+    s.context["dimension_y"] = Decimal("0")
+    second_record = await s.robot_command_store.get(info.robot_id, info.command_id)
+    second = RobotCommand.model_validate({key: second_record[key] for key in RobotCommand.model_fields})
+    await s.robot_action_service.process_command(second)
+    await s.robot_action_service.process_message(ack(second))
+    record = await s.robot_command_store.get(info.robot_id, info.command_id)
+    assert record["status"] == "FAILED"
+    assert (await s.robot_command_store.position(info.robot_id))["x"] == 0
+
+
+@pytest.mark.asyncio
+async def test_loop_stale_ack_and_timeout_preserve_last_confirmed_step() -> None:
+    s = setup()
+    info = await s.robot_action_service.submit_loop(
+        request=RobotLoopRequest(direction="NORTH"), **s.kwargs,
+    )
+    first = envelope(info)
+    await s.robot_action_service.process_command(first)
+    await s.robot_action_service.process_message(ack(first))
+    second_record = await s.robot_command_store.get(info.robot_id, info.command_id)
+    second = RobotCommand.model_validate({key: second_record[key] for key in RobotCommand.model_fields})
+    await s.robot_action_service.process_message(ack(first))
+    assert (await s.robot_command_store.get(info.robot_id, info.command_id))["attempt"] == 2
+    await s.robot_action_service.process_command(second)
+    s.now[0] += timedelta(seconds=61)
+    await s.robot_action_service.reconcile_robot(info.robot_id)
+    await s.robot_action_service.process_message(ack(second))
+    assert (await s.robot_command_store.get(info.robot_id, info.command_id))["status"] == "TIMED_OUT"
+    assert (await s.robot_command_store.position(info.robot_id))["y"] == 5
+
+
+@pytest.mark.asyncio
+async def test_loop_recovers_queued_next_step_without_advancing_attempt() -> None:
+    s = setup()
+    info = await s.robot_action_service.submit_loop(
+        request=RobotLoopRequest(direction="NORTH"), **s.kwargs,
+    )
+    first = envelope(info)
+    await s.robot_action_service.process_command(first)
+    s.robot_action_topic.publish_command.side_effect = RuntimeError("broker unavailable")
+    await s.robot_action_service.process_message(ack(first))
+    record = await s.robot_command_store.get(info.robot_id, info.command_id)
+    assert record["attempt"] == 2 and record["status"] == "QUEUED"
+    s.robot_action_topic.publish_command.side_effect = None
+    await s.robot_action_service.reconcile_robot(info.robot_id)
+    recovered = s.robot_action_topic.publish_command.await_args.args[0]
+    assert recovered.attempt == 2 and recovered.command_id == info.command_id
+
+
+@pytest.mark.parametrize("point,heading,expected", [
+    ((0, 10), "NORTH", "SOUTH"), ((10, 10), "EAST", "SOUTH"),
+    ((0, 0), "SOUTH", "NORTH"), ((10, 0), "WEST", "NORTH"),
+    ((0, 5), "WEST", "NORTH"), ((10, 5), "EAST", "NORTH"),
+    ((5, 9.5), "NORTH", "SOUTH"),
+])
+def test_loop_movement_edge_preferences(point: tuple[int, int], heading: str, expected: str) -> None:
+    from app.common.utils.robot_movement import RectangleBoundary, select_movement
+    x, y = map(Decimal, point)
+    result = select_movement(RectangleBoundary(Decimal(10), Decimal(10)), x, y, Decimal(1), Direction(heading), width=Decimal(10), height=Decimal(10))
+    assert result is not None and result[0].value == expected
 
 
 @pytest.mark.parametrize("distance", ["0m", "-1m", "1km", "nanm", "1e3m", ".5m", "01m", "1 m", "1" * 65 + "m", 1])
@@ -378,3 +514,19 @@ def test_http_routes_validation_and_authentication() -> None:
         command_id = result.json()["data"]["command_id"]
         assert client.get(f"/api/v1/bots/{s.kwargs['robot_id']}/commands/{command_id}").status_code == 200
         assert client.get(f"/api/v1/bots/{s.kwargs['robot_id']}/position").json()["data"] is None
+
+
+def test_loop_http_auth_validation_and_busy_robot() -> None:
+    s = setup()
+    app = FastAPI()
+    app.include_router(RobotActionRouter(RobotActionHandler(s.robot_action_service)).router, prefix="/api/v1/bots")
+    path = f"/api/v1/bots/{s.kwargs['robot_id']}/commands/loop"
+    with TestClient(app) as client:
+        assert client.post(path, json={"direction": "NORTH"}).status_code == 401
+        app.dependency_overrides[AuthMiddleware.auth_middleware] = lambda: s.kwargs["credential"]
+        for payload in ({"direction": "UP"}, {"direction": "NORTH", "distance": "0m"}, {"direction": "NORTH", "is_finish": True}):
+            assert client.post(path, json=payload).status_code == 422
+        result = client.post(path, json={"direction": "NORTH"})
+        assert result.status_code == 202
+        assert result.json()["data"]["attempt"] == 1
+        assert client.post(path, json={"direction": "NORTH"}).status_code == 409

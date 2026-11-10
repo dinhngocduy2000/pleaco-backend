@@ -37,6 +37,7 @@ from app.common.enum.robot import RobotConnectionStatus, RobotOperationalStatus
 from app.common.enum.user_roles import GroupRole
 from app.common.schemas.robot_action import (
     JsonValue, RobotAcknowledgement, RobotCommand, RobotCommandRecord, RobotCommandRequest,
+    RobotLoopRequest,
 )
 from app.core.config import settings
 from app.external.mqtt.robot_action import RobotActionMqttGateway
@@ -218,6 +219,32 @@ def request(direction: str = "NORTH", distance: str = "1m") -> RobotCommandReque
     return RobotCommandRequest(action={
         "is_start": True, "is_finish": False, "direction": direction, "distance": distance,
     })
+
+
+@pytest.mark.asyncio
+async def test_four_step_loop_real_broker_redis_and_simulator(harness: SimpleNamespace, tmp_path: Path) -> None:
+    async with simulator(harness, tmp_path, delay=0.25):
+        info = await harness.robot_action_service.submit_loop(
+            request=RobotLoopRequest(direction="NORTH"), **harness.auth,
+        )
+        for step in range(1, 5):
+            await eventually(lambda: len(harness.mqtt_probe.events("acks")) >= step)
+            if step < 4:
+                await eventually(lambda: len(harness.mqtt_probe.events("commands")) >= step + 1)
+                record = await harness.robot_command_store.get(harness.robot_id, info.command_id)
+                assert record["status"] != "SUCCEEDED"
+        record = await command_status(harness, info.command_id, "SUCCEEDED")
+        commands = [payload for _, payload, _ in harness.mqtt_probe.events("commands")]
+        acks = [payload for _, payload, _ in harness.mqtt_probe.events("acks")]
+        assert [payload["attempt"] for payload in commands] == [1, 2, 3, 4]
+        assert {payload["command_id"] for payload in commands + acks} == {str(info.command_id)}
+        assert [(payload["action"]["is_start"], payload["action"]["is_finish"]) for payload in commands] == [
+            (True, False), (False, False), (False, False), (False, True),
+        ]
+        assert [payload["action"] for payload in acks] == [payload["action"] for payload in commands]
+        position = await harness.robot_command_store.position(harness.robot_id)
+        assert (position["x"], position["y"]) == (5, 9)
+        assert record["attempt"] == 4
 
 
 @pytest.mark.asyncio

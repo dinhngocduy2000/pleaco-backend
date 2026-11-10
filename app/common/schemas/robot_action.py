@@ -3,7 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Annotated, Literal, TypeAlias, TypedDict
+from typing import Annotated, Literal, NotRequired, TypeAlias, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
@@ -53,6 +53,7 @@ class RobotCommandRecord(TypedDict):
     updated_at: str
     deadline: str
     failure_reason: str | None
+    loop: NotRequired[bool]
 
 
 class RobotPositionRecord(RobotCoordinates):
@@ -116,6 +117,19 @@ class RobotAcknowledgement(RobotCommand):
 class RobotCommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: CleaningAction
+
+
+class RobotLoopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    direction: Direction
+    distance: Annotated[str, Field(pattern=r"^(?:0|[1-9]\d*)(?:\.\d+)?m$", max_length=64)] = "1m"
+
+    @field_validator("distance")
+    @classmethod
+    def positive_distance(cls, value: str) -> str:
+        if Decimal(value[:-1]) <= 0:
+            raise ValueError("Distance must be positive")
+        return value
 
 
 class CommandStatus(str, Enum):

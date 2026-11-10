@@ -14,6 +14,11 @@ class RobotActionRouter:
             summary="Queue a cleaning movement for an online robot",
         )
         self.router.add_api_route(
+            "/{bot_id}/commands/loop", robot_action_handler.submit_loop, methods=["POST"],
+            response_model=BaseResponse[RobotCommandInfo], status_code=status.HTTP_202_ACCEPTED,
+            summary="Queue a four-action cleaning loop for an online robot",
+        )
+        self.router.add_api_route(
             "/{bot_id}/commands/{command_id}", robot_action_handler.get_command, methods=["GET"],
             response_model=BaseResponse[RobotCommandInfo], summary="Read robot command status",
         )
