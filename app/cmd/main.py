@@ -59,6 +59,10 @@ from app.external.redis.robot_commands import RobotCommandStore
 from app.handler.robot_action import RobotActionHandler
 from app.router.robot_action import RobotActionRouter
 from app.services.robot_action import RobotActionService
+from app.services.cleaning_path import CleaningPathService
+from app.repository.cleaning_path import CleaningPathRepository
+from app.handler.cleaning_path import CleaningPathHandler
+from app.router.cleaning_path import CleaningPathRouter
 
 
 class App:
@@ -170,6 +174,11 @@ class App:
             robot_action_handler = RobotActionHandler(robot_action_service)
             tag_handler = TagHandler(service=tag_service)
             map_handler = MapHandler(service=map_service)
+            # Wire the preview's repository, service, and handler to the same
+            # registry and confirmed-position store used by robot actions.
+            cleaning_path_handler = CleaningPathHandler(CleaningPathService(
+                registry, permission_service, robot_command_store, CleaningPathRepository()
+            ))
 
             # ------------ Router ------------
             user_router = UserRouter(handler=user_handler)
@@ -183,6 +192,8 @@ class App:
             )
             tag_router = TagRouter(handler=tag_handler)
             map_router = MapRouter(handler=map_handler)
+            # Keep the preview route separate from other map write routes.
+            cleaning_path_router = CleaningPathRouter(cleaning_path_handler)
             self.application.include_router(
                 user_router.router,
                 prefix=settings.API_V1_PREFIX + "/users",
@@ -217,6 +228,11 @@ class App:
                 map_router.router,
                 prefix=settings.API_V1_PREFIX + "/maps",
                 tags=["Maps"],
+            )
+            # Publish the read-only cleaning path preview beneath /maps.
+            self.application.include_router(
+                cleaning_path_router.router,
+                prefix=settings.API_V1_PREFIX + "/maps",
             )
             # Command broker availability must not block auth/HTTP routes.
             self.application.state.robot_command_startup_task = asyncio.create_task(
