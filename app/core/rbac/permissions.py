@@ -6,6 +6,7 @@ from app.common.context import AppContext
 from app.common.enum.context_actions import (
     CREATE_BOT,
     SEND_ROBOT_COMMAND,
+    PREVIEW_CLEANING_PATH,
     SAVE_DOCKING_STATIONS,
     ASSIGN_DOCKING_STATION_ROBOT,
     CREATE_ENVIRONMENT_ZONES,
@@ -109,6 +110,8 @@ ROLE_PERMISSIONS: dict[GroupRole, set[str]] = {
 OWN_ONLY_ACTIONS: set[str] = {}
 for _role in (GroupRole.MEMBER, GroupRole.MODERATOR, GroupRole.ADMIN, GroupRole.OWNER):
     ROLE_PERMISSIONS[_role].add(SEND_ROBOT_COMMAND)
+    # A preview reads the map and robot position but does not dispatch commands.
+    ROLE_PERMISSIONS[_role].add(PREVIEW_CLEANING_PATH)
 logger = Logger()
 
 

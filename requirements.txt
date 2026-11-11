@@ -46,6 +46,8 @@ sentry-sdk==2.49.0
 shellingham==1.5.4
 SQLAlchemy==2.0.36
 GeoAlchemy2==0.20.0
+# Geometry buffering and full-segment route validation for path previews.
+shapely==2.2.0
 starlette==0.50.0
 typer==0.21.1
 typing-inspection==0.4.2
