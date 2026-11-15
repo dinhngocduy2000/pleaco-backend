@@ -25,7 +25,7 @@ from app.repository.docking_station import (
     BoundaryPlacementInspection,
     DockingStationRobotConflict,
 )
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 
 logger = Logger()
 IndexedStation = tuple[int, DockingStationSaveItemDTO]
@@ -92,7 +92,9 @@ class DockingStationService:
                     status_code=409,
                 ) from error
 
-        await self.repo.transaction_wrapper(assign)
+        await self.repo.transaction_wrapper(
+            assign, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @require_permission(GroupRole.ADMIN)
     async def save_docking_stations(
@@ -115,7 +117,9 @@ class DockingStationService:
                 ctx=ctx,
             )
 
-        results = await self.repo.transaction_wrapper(save)
+        results = await self.repo.transaction_wrapper(
+            save, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         logger.info(
             msg=f"Saved {len(results)} docking stations for map {station_save.map_id}",
             context=ctx,

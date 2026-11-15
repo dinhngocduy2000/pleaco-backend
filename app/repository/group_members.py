@@ -2,7 +2,7 @@ import datetime
 from typing import List, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Select, delete, func, select, update
+from sqlalchemy import Select, delete, func, select, text, update
 from app.common.context import AppContext
 from app.common.enum.group_member_status import GroupMemberInvitationStatus
 from app.common.enum.user_roles import GroupRole
@@ -242,21 +242,10 @@ class GroupMembersRepository:
     ) -> int:
         """Mark due pending memberships rejected in an idempotent bulk update."""
         try:
-            stmt = (
-                update(GroupMembers)
-                .where(
-                    GroupMembers.invitation_status
-                    == GroupMemberInvitationStatus.PENDING,
-                    GroupMembers.invitation_expires_at <= now,
-                )
-                .values(
-                    invitation_status=GroupMemberInvitationStatus.REJECTED,
-                    invitation_id=None,
-                    invitation_expires_at=None,
-                )
+            return int(
+                await session.scalar(text("SELECT public.pleaco_expire_invitations()"))
+                or 0
             )
-            result = await session.execute(stmt)
-            return result.rowcount or 0
         except Exception as e:
             logger.error(
                 msg=f"Reject expired group invitations repository: Exception: {e}",

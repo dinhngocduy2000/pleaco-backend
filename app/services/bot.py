@@ -29,7 +29,7 @@ from app.external.redis.redis import RedisClient
 from app.core.rbac.role_validation import require_permission
 from app.models.robot import Robot
 from app.models.tag import Tag
-from app.repository.registry import TransactionRunner
+from app.repository.registry import DbAccessContext, TransactionRunner
 
 logger = Logger()
 
@@ -194,7 +194,9 @@ class BotService:
             )
             return self._to_bot_info(bot)
 
-        return await self.transactions.transaction_wrapper(_create_bot)
+        return await self.transactions.transaction_wrapper(
+            _create_bot, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @require_permission(GroupRole.GUEST)
     async def list_bots(
@@ -239,7 +241,9 @@ class BotService:
                 for row in rows
             ], total
 
-        bots, total = await self.transactions.transaction_wrapper(_list_bots)
+        bots, total = await self.transactions.transaction_wrapper(
+            _list_bots, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         return await self._with_live_last_seen(bots), total
 
     async def _with_live_last_seen(self, bots: list[BotListInfo]) -> list[BotListInfo]:
@@ -307,7 +311,9 @@ class BotService:
                 for row in rows
             ]
 
-        return await self.transactions.transaction_wrapper(_list_bot_key_value)
+        return await self.transactions.transaction_wrapper(
+            _list_bot_key_value, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @require_permission(GroupRole.MODERATOR)
     async def delete_bot(
@@ -346,7 +352,9 @@ class BotService:
             if deleted_bot is None:
                 raise NotFoundException(message="Bot not found in the current group")
 
-        await self.transactions.transaction_wrapper(_delete_bot)
+        await self.transactions.transaction_wrapper(
+            _delete_bot, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @staticmethod
     def _to_bot_info(bot: Robot) -> BotInfo:

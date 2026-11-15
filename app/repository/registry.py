@@ -1,8 +1,13 @@
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
+
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.common.types import T
+from app.common.exceptions import ForbiddenException
 from app.external.redis.redis import RedisClient
 from app.repository.group import GroupRepository
 from app.repository.docking_station import DockingStationRepository
@@ -19,12 +24,19 @@ from app.repository.user import UserRepository
 from app.repository.robot_action import RobotActionRepository
 
 
+@dataclass(frozen=True)
+class DbAccessContext:
+    actor_id: UUID | None
+    group_id: UUID | None
+
+
 class TransactionRunner(Protocol):
     """Run one service operation inside the application's transaction boundary."""
 
     async def transaction_wrapper(
         self,
         tx_func: Callable[[AsyncSession], Awaitable[T]],
+        context: DbAccessContext,
     ) -> T: ...
 
 
@@ -66,22 +78,48 @@ class Registry:
         self._redis_client = redis_client
 
     async def transaction_wrapper(
-        self, tx_func: Callable[[AsyncSession], Awaitable[T]]
+        self, tx_func: Callable[[AsyncSession], Awaitable[T]], context: DbAccessContext
     ) -> T:
-        try:
-            async_session = async_sessionmaker(self._pg_engine, expire_on_commit=False)
-            session = async_session()
-            await session.begin()
-            res = await tx_func(session)
-            await session.commit()
-            return res
-        except Exception as e:
-            if session is not None and session.is_active:
-                await session.rollback()
-            raise e
-        finally:
-            if session is not None and session.is_active:
-                await session.close()
+        async_session = async_sessionmaker(self._pg_engine, expire_on_commit=False)
+        async with async_session() as session:
+            async with session.begin():
+                await self.set_transaction_context(session, context)
+                if context.actor_id is not None and context.group_id is not None:
+                    member = await session.scalar(
+                        text(
+                            "SELECT 1 FROM public.group_members "
+                            "WHERE member_id = :actor_id AND group_id = :group_id "
+                            "AND invitation_status = 'ACCEPTED' FOR SHARE"
+                        ),
+                        {"actor_id": context.actor_id, "group_id": context.group_id},
+                    )
+                    if member is None:
+                        raise ForbiddenException(
+                            message="This user is not found in the current group"
+                        )
+                return await tx_func(session)
+
+    @staticmethod
+    async def set_transaction_context(
+        session: AsyncSession, context: DbAccessContext
+    ) -> None:
+        """Set tenant identity for this transaction only, including absent values."""
+        await session.execute(
+            text("SELECT set_config('app.actor_id', :actor_id, true)"),
+            {"actor_id": str(context.actor_id) if context.actor_id else ""},
+        )
+        await session.execute(
+            text("SELECT set_config('app.group_id', :group_id, true)"),
+            {"group_id": str(context.group_id) if context.group_id else ""},
+        )
+
+    async def resolve_robot_group(self, robot_id: UUID) -> UUID | None:
+        """Resolve a broker robot UUID using the narrowly scoped database helper."""
+        async with self._pg_engine.connect() as connection:
+            return await connection.scalar(
+                text("SELECT public.pleaco_robot_group(:robot_id)"),
+                {"robot_id": robot_id},
+            )
 
     def user_repo(self) -> UserRepository:
         return self._user_repo

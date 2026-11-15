@@ -37,7 +37,7 @@ from app.external.queues.topics.add_group_member import (
 from app.models.group import Group
 from app.models.group_members import GroupMembers
 from app.models.user import User
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = Logger()
@@ -310,7 +310,8 @@ class GroupService:
             return invitations
 
         invitations = await self.repo.transaction_wrapper(
-            persist_pending_invitation_request
+            persist_pending_invitation_request,
+            DbAccessContext(actor_id=credential.id, group_id=group_id),
         )
         for invitation in invitations:
             try:
@@ -413,7 +414,9 @@ class GroupService:
                 raise NotFoundException(message="Group member not found")
             return updated_member
 
-        updated_member = await self.repo.transaction_wrapper(_update_group_member)
+        updated_member = await self.repo.transaction_wrapper(
+            _update_group_member, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         await self.repo.group_members_repo().set_group_member_redis(
             member=updated_member, ctx=ctx
         )
@@ -446,7 +449,9 @@ class GroupService:
             )
             return target_member
 
-        target_member = await self.repo.transaction_wrapper(_validate_deletion)
+        target_member = await self.repo.transaction_wrapper(
+            _validate_deletion, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         if (
             target_member.invitation_status == GroupMemberInvitationStatus.PENDING
             and target_member.invitation_id is not None
@@ -467,7 +472,9 @@ class GroupService:
             if deleted_member is None:
                 raise NotFoundException(message="Group member not found")
 
-        await self.repo.transaction_wrapper(_hard_delete_group_member)
+        await self.repo.transaction_wrapper(
+            _hard_delete_group_member, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         await self.repo.group_members_repo().delete_group_member_redis(
             group_id=group_id, member_id=member_id, ctx=ctx
         )
@@ -509,6 +516,32 @@ class GroupService:
             raise ForbiddenException(message="You cannot view this invitation")
 
         async def accept_membership(session: AsyncSession) -> GroupMembers:
+            own_invitation = await self.repo.group_members_repo().get_group_member_by_id(
+                session=session,
+                member_id=credential.id,
+                group_id=invitation.group_id,
+            )
+            if (
+                own_invitation is not None
+                and own_invitation.member_id == invitation.member_id
+                and own_invitation.invitation_status
+                == GroupMemberInvitationStatus.ACCEPTED
+            ):
+                return own_invitation
+            if (
+                own_invitation is None
+                or own_invitation.invitation_id != invitation.invitation_id
+                or own_invitation.member_id != invitation.member_id
+                or own_invitation.invitation_status
+                != GroupMemberInvitationStatus.PENDING
+                or own_invitation.invitation_expires_at is None
+                or own_invitation.invitation_expires_at <= datetime.now(timezone.utc)
+            ):
+                raise NotFoundException(message="Invitation not found or expired")
+            await self.repo.set_transaction_context(
+                session,
+                DbAccessContext(actor_id=credential.id, group_id=invitation.group_id),
+            )
             group_member = (
                 await self.repo.group_members_repo().accept_pending_invitation(
                     session=session,
@@ -537,7 +570,10 @@ class GroupService:
                 return existing_member
             raise NotFoundException(message="Invitation not found or expired")
 
-        group_member = await self.repo.transaction_wrapper(accept_membership)
+        group_member = await self.repo.transaction_wrapper(
+            accept_membership,
+            DbAccessContext(actor_id=credential.id, group_id=None),
+        )
 
         await self.repo.group_members_repo().set_group_member_redis(
             member=group_member, ctx=ctx
@@ -585,7 +621,9 @@ class GroupService:
                 ctx=ctx,
             )
 
-        return await self.repo.transaction_wrapper(reject_expired)
+        return await self.repo.transaction_wrapper(
+            reject_expired, DbAccessContext(actor_id=None, group_id=None)
+        )
 
     async def run_invitation_expiry_reconciler(self) -> None:
         """Continuously reconcile expired Redis invitations with membership state."""
@@ -717,6 +755,11 @@ class GroupService:
                     session=session, group_create=group_create_domain, ctx=ctx
                 )
 
+                await self.repo.set_transaction_context(
+                    session,
+                    DbAccessContext(actor_id=credential.id, group_id=new_group.id),
+                )
+
                 await self._create_group_members(
                     member_ids=group_create.members,
                     group_id=new_group.id,
@@ -751,7 +794,9 @@ class GroupService:
                 logger.error(msg=f"Create group: Exception: {e}", context=ctx)
                 raise e
 
-        return await self.repo.transaction_wrapper(_create_group)
+        return await self.repo.transaction_wrapper(
+            _create_group, DbAccessContext(actor_id=credential.id, group_id=None)
+        )
 
     async def list_group_key_value(
         self, ctx: AppContext, credential: Credential
@@ -783,7 +828,9 @@ class GroupService:
                 )
                 raise e
 
-        return await self.repo.transaction_wrapper(_list_group_key_value)
+        return await self.repo.transaction_wrapper(
+            _list_group_key_value, DbAccessContext(actor_id=credential.id, group_id=None)
+        )
 
     @require_permission(GroupRole.ADMIN)
     async def list_group_members(
@@ -816,7 +863,9 @@ class GroupService:
                 for member, user in rows
             ], total
 
-        return await self.repo.transaction_wrapper(_list_group_members)
+        return await self.repo.transaction_wrapper(
+            _list_group_members, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     async def get_group(
         self, group_id: UUID, ctx: AppContext, credential: Credential
@@ -845,6 +894,17 @@ class GroupService:
                 if group is None:
                     logger.error(msg=f"Group with id {group_id} not found", context=ctx)
                     raise BadRequestException(message="Group not found")
+                own_membership = await self.repo.group_members_repo().get_group_member_by_id(
+                    session=session,
+                    member_id=credential.id,
+                    group_id=group_id,
+                    accepted_only=True,
+                )
+                if own_membership is None:
+                    raise BadRequestException(message="User is not a member of the group")
+                await self.repo.set_transaction_context(
+                    session, DbAccessContext(actor_id=credential.id, group_id=group_id)
+                )
                 members = await self.repo.group_repo().list_member_users(
                     session=session, group_id=group.id, ctx=ctx
                 )
@@ -858,7 +918,9 @@ class GroupService:
                 logger.error(msg=f"Get group service: Exception: {e}", context=ctx)
                 raise e
 
-        return await self.repo.transaction_wrapper(_get_group)
+        return await self.repo.transaction_wrapper(
+            _get_group, DbAccessContext(actor_id=credential.id, group_id=None)
+        )
 
     async def switch_current_user_active_group(
         self, input: SwitchGroupRequest, ctx: AppContext, credential: Credential
@@ -889,6 +951,19 @@ class GroupService:
                     )
                     raise BadRequestException(message="Group not found")
 
+                own_membership = await self.repo.group_members_repo().get_group_member_by_id(
+                    session=session,
+                    member_id=credential.id,
+                    group_id=input.group_id,
+                    accepted_only=True,
+                )
+                if own_membership is None:
+                    raise BadRequestException(message="User is not a member of the group")
+                await self.repo.set_transaction_context(
+                    session,
+                    DbAccessContext(actor_id=credential.id, group_id=input.group_id),
+                )
+
                 members = await self.repo.group_repo().list_member_users(
                     session=session, group_id=group.id, ctx=ctx
                 )
@@ -909,4 +984,7 @@ class GroupService:
                 logger.error(msg=f"Switch group service: Exception: {e}", context=ctx)
                 raise e
 
-        return await self.repo.transaction_wrapper(_switch_current_user_active_group)
+        return await self.repo.transaction_wrapper(
+            _switch_current_user_active_group,
+            DbAccessContext(actor_id=credential.id, group_id=None),
+        )

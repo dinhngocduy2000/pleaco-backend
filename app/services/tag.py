@@ -10,7 +10,7 @@ from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
 from app.models.tag import Tag
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 
 
 class TagService:
@@ -49,7 +49,9 @@ class TagService:
             )
             return self._to_tag_info(tag)
 
-        return await self.repo.transaction_wrapper(_create_tag)
+        return await self.repo.transaction_wrapper(
+            _create_tag, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @require_permission(GroupRole.GUEST)
     async def list_tags(
@@ -67,7 +69,9 @@ class TagService:
                 for tag in tags
             ]
 
-        return await self.repo.transaction_wrapper(_list_tags)
+        return await self.repo.transaction_wrapper(
+            _list_tags, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @staticmethod
     def _to_tag_info(tag: Tag) -> TagInfo:

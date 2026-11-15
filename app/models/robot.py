@@ -3,13 +3,16 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    DDL,
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     UniqueConstraint,
     desc,
+    event,
     func,
 )
 from sqlalchemy.dialects.postgresql import INET, UUID as PostgreSQL_UUID
@@ -34,6 +37,11 @@ class Robot(Base):
     __tablename__ = "robots"
     __table_args__ = (
         UniqueConstraint("group_id", "serial_num", name="uq_robots_group_serial_num"),
+        ForeignKeyConstraint(
+            ["map_id", "group_id"],
+            ["maps.id", "maps.group_id"],
+            name="fk_robots_map_group",
+        ),
         Index(
             "ix_robots_group_model_created_at",
             "group_id",
@@ -65,7 +73,6 @@ class Robot(Base):
     )
     map_id: Mapped[UUID | None] = mapped_column(
         PostgreSQL_UUID(as_uuid=True),
-        ForeignKey("maps.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -114,7 +121,9 @@ class Robot(Base):
     )
 
     group: Mapped["Group"] = relationship("Group", back_populates="robots")
-    map: Mapped["Map | None"] = relationship("Map", back_populates="robots")
+    map: Mapped["Map | None"] = relationship(
+        "Map", back_populates="robots", foreign_keys=[map_id]
+    )
     docking_station: Mapped["DockingStation | None"] = relationship(
         "DockingStation",
         back_populates="robot",
@@ -125,3 +134,23 @@ class Robot(Base):
     tags: Mapped[list["Tag"]] = relationship(
         "Tag", secondary=robot_tags, back_populates="robots"
     )
+
+
+# SQLAlchemy cannot compile PostgreSQL's column-specific SET NULL clause for a
+# composite FK. Recreate it after metadata.create_all with the migration's DDL.
+event.listen(
+    Robot.__table__,
+    "after_create",
+    DDL("ALTER TABLE %(table)s DROP CONSTRAINT fk_robots_map_group").execute_if(
+        dialect="postgresql"
+    ),
+)
+event.listen(
+    Robot.__table__,
+    "after_create",
+    DDL(
+        "ALTER TABLE %(table)s ADD CONSTRAINT fk_robots_map_group "
+        "FOREIGN KEY (map_id, group_id) REFERENCES maps (id, group_id) "
+        "ON DELETE SET NULL (map_id)"
+    ).execute_if(dialect="postgresql"),
+)

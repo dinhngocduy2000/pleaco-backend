@@ -33,6 +33,7 @@ class Map(Base):
     __tablename__ = "maps"
     __table_args__ = (
         UniqueConstraint("group_id", "name", name="uq_maps_group_name"),
+        UniqueConstraint("id", "group_id", name="uq_maps_id_group_id"),
         Index("ix_maps_status", "status"),
         Index(
             "ix_maps_name_trgm",
@@ -95,7 +96,9 @@ class Map(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    robots: Mapped[list["Robot"]] = relationship("Robot", back_populates="map")
+    robots: Mapped[list["Robot"]] = relationship(
+        "Robot", back_populates="map", foreign_keys="Robot.map_id"
+    )
     tags: Mapped[list["Tag"]] = relationship(
         "Tag", secondary=map_tags, back_populates="maps"
     )
