@@ -85,7 +85,7 @@ def setup_service(role=GroupRole.ADMIN, exists=True):
 
     zones.inspect_boundary_coverage.side_effect = inspect
 
-    async def transaction(callback):
+    async def transaction(callback, context):
         return await callback(SimpleNamespace())
 
     registry = SimpleNamespace(

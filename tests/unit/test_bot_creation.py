@@ -126,7 +126,7 @@ def _service(role: GroupRole | None, tags: list[Tag]) -> tuple[BotService, BotRe
     bot_repository = BotRepositoryStub()
     tag_repository = TagRepositoryStub(tags)
     transactions = SimpleNamespace(
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return BotService(
         bot_repository=bot_repository,

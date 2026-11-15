@@ -124,7 +124,7 @@ def _service(role: GroupRole | None, detail: dict | None):
     map_repository = MapRepositoryStub(detail)
     registry = SimpleNamespace(
         map_repo=lambda: map_repository,
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return MapService(registry, PermissionServiceStub(role)), map_repository
 

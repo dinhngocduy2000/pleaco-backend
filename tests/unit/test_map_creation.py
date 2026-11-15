@@ -178,7 +178,7 @@ def _service(role: GroupRole | None, robots: list[Robot], tags: list[Tag]):
         map_repo=lambda: map_repository,
         bot_repo=lambda: BotRepositoryStub(robots),
         tag_repo=lambda: TagRepositoryStub(tags),
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return MapService(registry, PermissionServiceStub(role)), map_repository
 

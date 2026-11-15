@@ -89,7 +89,11 @@ class FakeRegistry:
     def bot_repo(self) -> FakeBotRepository:
         return self._bot_repository
 
-    async def transaction_wrapper(self, callback: Callable[[object], Awaitable[T]]) -> T:
+    async def resolve_robot_group(self, robot_id: UUID) -> UUID | None:
+        bot = self._bot_repository.bot
+        return bot.group_id if bot is not None and bot.id == robot_id else None
+
+    async def transaction_wrapper(self, callback: Callable[[object], Awaitable[T]], context) -> T:
         async with self.lock:
             return await callback(object())
 

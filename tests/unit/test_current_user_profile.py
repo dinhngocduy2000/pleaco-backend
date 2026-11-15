@@ -66,7 +66,7 @@ class RegistryStub:
     def user_repo(self) -> UserRepositoryStub:
         return self._user_repo
 
-    async def transaction_wrapper(self, callback):
+    async def transaction_wrapper(self, callback, context):
         self.transaction_calls += 1
         return await callback(SimpleNamespace())
 

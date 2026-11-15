@@ -131,7 +131,7 @@ def _service(
         ),
         group_members_repo=lambda: members_repo,
         group_invitation_repo=lambda: invitation_repo,
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return (
         GroupService(repo, PermissionServiceStub(requester_role), SimpleNamespace()),

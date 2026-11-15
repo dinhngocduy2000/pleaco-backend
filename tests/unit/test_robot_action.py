@@ -92,9 +92,13 @@ def setup(role: GroupRole | None = GroupRole.MEMBER) -> SimpleNamespace:
                    connection_status=RobotConnectionStatus.ONLINE, operational_status="IDLE",
                    dimension_x=Decimal("10"), dimension_y=Decimal("10"), dock_x=4.0, dock_y=4.0)
     robot_action_repository = SimpleNamespace(get_context=AsyncMock(return_value=context), list_robot_ids=AsyncMock(return_value=[robot_id]))
-    async def transaction(callback: Callable[[object], Awaitable[T]]) -> T:
+    async def transaction(callback: Callable[[object], Awaitable[T]], context) -> T:
         return await callback(object())
-    registry = SimpleNamespace(transaction_wrapper=transaction, robot_action_repo=lambda: robot_action_repository)
+    registry = SimpleNamespace(
+        transaction_wrapper=transaction,
+        robot_action_repo=lambda: robot_action_repository,
+        resolve_robot_group=AsyncMock(return_value=group_id),
+    )
     permission_service = SimpleNamespace(get_group_member=AsyncMock(return_value=SimpleNamespace(role=role)),
                                  is_action_executable=PermissionService.is_action_executable)
     robot_command_store = MemoryStore()

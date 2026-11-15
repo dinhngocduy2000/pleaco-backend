@@ -91,7 +91,7 @@ def setup_service(role=GroupRole.ADMIN):
         clear_assignments=AsyncMock(),
     )
 
-    async def transaction(callback):
+    async def transaction(callback, context):
         return await callback(SimpleNamespace())
 
     permissions = SimpleNamespace(

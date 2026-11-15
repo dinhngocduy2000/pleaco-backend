@@ -44,7 +44,7 @@ def setup_service(role=GroupRole.ADMIN, exists=True):
 
     boundaries = SimpleNamespace(inspect_geometry=AsyncMock(return_value=(True, True)), upsert=AsyncMock(side_effect=save))
 
-    async def transaction(callback):
+    async def transaction(callback, context):
         return await callback(SimpleNamespace())
 
     registry = SimpleNamespace(
