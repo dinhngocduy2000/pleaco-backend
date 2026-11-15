@@ -78,7 +78,7 @@ def setup_service(
     transaction_state = SimpleNamespace(committed=False, rolled_back=False)
     transaction_session = object()
 
-    async def transaction(callback):
+    async def transaction(callback, context):
         try:
             result = await callback(transaction_session)
         except Exception:

@@ -128,7 +128,7 @@ def _service(role: GroupRole | None, redis=None) -> tuple[BotService, BotReposit
         tag_repository=SimpleNamespace(),
         robot_tags_repository=robot_tags_repository,
         transactions=SimpleNamespace(
-            transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+            transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
         ),
         permission_service=PermissionServiceStub(role),
         redis_client=redis,

@@ -62,7 +62,7 @@ def _service(role: GroupRole, rows=None, total=0):
             get_group=lambda **kwargs: _async_value(SimpleNamespace(id=group_id))
         ),
         group_members_repo=lambda: member_repo,
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return GroupService(
         repo=repo,

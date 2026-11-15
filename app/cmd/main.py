@@ -15,7 +15,7 @@ from app.cmd.robot_commands import start_robot_commands
 from app.common.middleware import register_middleware
 from app.common.middleware.auth_middleware import AuthMiddleware
 from app.core.config import settings
-from app.core.database import create_pg_engine
+from app.core.database import create_pg_engine, verify_restricted_runtime_role
 from app.external.mail.mail import MailService
 from app.external.queues.queue import RabbitMQClient
 from app.external.queues.topics.user_verification import UserVerificationTopic
@@ -71,6 +71,7 @@ class App:
     def on_init_app(self) -> Callable[[], Awaitable[None]]:
         async def start_app() -> None:
             pg_engine = create_pg_engine()
+            await verify_restricted_runtime_role(pg_engine)
             redis_client = RedisClient()
             rabbitmq_client = RabbitMQClient()
             self.application.state.rabbitmq = rabbitmq_client

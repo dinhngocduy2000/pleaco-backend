@@ -66,7 +66,7 @@ def _service(role: GroupRole | None, tags: list[Tag]) -> TagService:
     repository = TagRepositoryStub(tags)
     registry = SimpleNamespace(
         tag_repo=lambda: repository,
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return TagService(registry, PermissionServiceStub(role))
 

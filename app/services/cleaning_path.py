@@ -26,7 +26,7 @@ from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
 from app.external.redis.robot_commands import RobotCommandStore
 from app.repository.cleaning_path import CleaningPathRepository
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 from app.services.cleaning_path_planner import Point2D, plan_cleaning_path
 
 logger = Logger()
@@ -75,7 +75,7 @@ class CleaningPathService:
         active_group_id = self._require_active_group(group_id, credential, ctx)
 
         # Keep the database transaction short; Redis checks and planning follow it.
-        snapshot = await self._load_layout(map_id, active_group_id, ctx)
+        snapshot = await self._load_layout(map_id, active_group_id, credential.id, ctx)
         robots = self._map_robots(snapshot, map_id, active_group_id, robot_id, ctx)
         await self._require_online(robot_id, robots[robot_id].connection_status, ctx)
         self._require_dimensions_boundary(snapshot, map_id, ctx)
@@ -125,10 +125,13 @@ class CleaningPathService:
             raise ForbiddenException(message="An active group must be selected")
         return group_id
 
-    async def _load_layout(self, map_id: UUID, group_id: UUID, ctx: AppContext) -> dict:
+    async def _load_layout(
+        self, map_id: UUID, group_id: UUID, actor_id: UUID, ctx: AppContext
+    ) -> dict:
         """Load a map-scoped layout snapshot through the repository."""
         snapshot = await self.registry.transaction_wrapper(
-            lambda session: self.repository.layout(session, map_id, group_id, ctx)
+            lambda session: self.repository.layout(session, map_id, group_id, ctx),
+            DbAccessContext(actor_id=actor_id, group_id=group_id),
         )
         if snapshot is None:
             logger.warning(

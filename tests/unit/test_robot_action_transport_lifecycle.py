@@ -176,9 +176,10 @@ def application_fixture(monkeypatch: pytest.MonkeyPatch, *, mqtt_fails_once: boo
         if mqtt_fails_once and len(calls) == 1:
             raise ConnectionError("MQTT temporarily unavailable")
     robot_action_mqtt_gateway = SimpleNamespace(start=AsyncMock(side_effect=mqtt_start), stop=AsyncMock(side_effect=lambda: events.append("mqtt_stopped")))
-    async def transaction(self: Registry, callback: Callable[[None], Awaitable[T]]) -> T:
+    async def transaction(self: Registry, callback: Callable[[None], Awaitable[T]], context) -> T:
         return await callback(None)
     monkeypatch.setattr(main, "create_pg_engine", lambda: object())
+    monkeypatch.setattr(main, "verify_restricted_runtime_role", AsyncMock())
     monkeypatch.setattr(main, "RedisClient", lambda: SimpleNamespace())
     monkeypatch.setattr(main, "RabbitMQClient", lambda: rabbitmq_client)
     monkeypatch.setattr(main.Registry, "transaction_wrapper", transaction)

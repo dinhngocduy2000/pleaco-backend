@@ -385,7 +385,7 @@ def map_service(exists: bool, *, member: bool = True):
     repository = MapRepositoryStub(exists)
     registry = SimpleNamespace(
         map_repo=lambda: repository,
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return MapService(registry, FakePermissionService(allowed=member)), repository
 

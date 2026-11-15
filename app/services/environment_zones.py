@@ -16,7 +16,7 @@ from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
 from app.repository.environment_zone import EnvironmentZoneRepository
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 
 logger = Logger()
 
@@ -169,7 +169,9 @@ class EnvironmentZonesService:
                 ctx=ctx,
             )
 
-        await self.repo.transaction_wrapper(_save)
+        await self.repo.transaction_wrapper(
+            _save, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         logger.info(
             msg=f"Saved environment zones for map {zones_create.map_id}",
             context=ctx,

@@ -13,7 +13,7 @@ from app.common.schemas.robot_status import RobotHeartbeatEvent, RobotStatusEven
 from app.core.config import settings
 from app.external.realtime.robot_status import RobotStatusRealtimePublisher
 from app.models.robot import Robot
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 from app.services.robot_action import RobotActionService
 
 logger = Logger()
@@ -60,6 +60,10 @@ class BotStatusService:
         rejects the heartbeat. The transaction performs no robot-row update.
         """
 
+        group_id = await self.registry.resolve_robot_group(event.robot_id)
+        if group_id is None:
+            return
+
         async def refresh_last_seen(session: AsyncSession) -> None:
             # Use the same row lock as status reconciliation across workers.
             # A plain read could observe ONLINE just before OFFLINE commits.
@@ -93,7 +97,9 @@ class BotStatusService:
                 )
             )
 
-        await self.registry.transaction_wrapper(refresh_last_seen)
+        await self.registry.transaction_wrapper(
+            refresh_last_seen, DbAccessContext(actor_id=None, group_id=group_id)
+        )
 
     async def process_status_event(self, event: RobotStatusEvent) -> None:
         """Save an ordered status event, then update its Redis cache.
@@ -103,9 +109,14 @@ class BotStatusService:
         cannot publish an uncommitted state. A second locked check prevents
         an older event from updating the cache after a newer one has committed.
         """
+        group_id = await self.registry.resolve_robot_group(event.robot_id)
+        if group_id is None:
+            return
+        access_context = DbAccessContext(actor_id=None, group_id=group_id)
         received_at = datetime.now(timezone.utc)
         result = await self.registry.transaction_wrapper(
-            lambda session: self._save_status(session, event, received_at)
+            lambda session: self._save_status(session, event, received_at),
+            access_context,
         )
         if result is None:
             return
@@ -144,7 +155,8 @@ class BotStatusService:
             is_current = await self.registry.transaction_wrapper(
                 lambda session: self._update_cache_if_current(
                     session, event, cache_state, state, connection_changed, received_at
-                )
+                ),
+                access_context,
             )
         except Exception:
             # Redis is a live cache; the committed database state remains

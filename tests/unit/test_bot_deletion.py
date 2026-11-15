@@ -102,7 +102,7 @@ class BotRepositoryStub:
 def _service(role: GroupRole | None, bots: list[Robot]):
     bot_repository = BotRepositoryStub(bots)
     transactions = SimpleNamespace(
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return BotService(
         bot_repository=bot_repository,

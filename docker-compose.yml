@@ -41,15 +41,15 @@ services:
     networks:
       - pleaco-network
 
-  redis-insight:
-    image: redis/redisinsight:latest
-    container_name: redis-insight
-    ports:
-      - "5540:5540"
-    depends_on:
-      - redis
-    networks:
-      - pleaco-network
+  # redis-insight:
+  #   image: redis/redisinsight:latest
+  #   container_name: redis-insight
+  #   ports:
+  #     - "5540:5540"
+  #   depends_on:
+  #     - redis
+  #   networks:
+  #     - pleaco-network
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
@@ -80,32 +80,81 @@ services:
     networks:
       - pleaco-network
 
-  api:
+  db-migrate:
     build: .
-    container_name: pleaco_api
-    command: uvicorn app.cmd.main:app --host 0.0.0.0 --port 8000 --reload
-    volumes:
-      - .:/app
-    ports:
-      - "8000:8000"
+    command: sh /app/scripts/provision-db.sh
+    restart: "no"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - REDIS_HOST=redis
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - MQTT_HOST=mosquitto
-      - MQTT_PORT=1883
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - pleaco-network
+
+  api:
+    build: .
+    container_name: pleaco_api
+    command: python /app/scripts/start-api.py
+    volumes:
+      - ./app:/app/app
+      - ./static:/app/static
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_DB_PASSWORD=${APP_DB_PASSWORD}
+      - APP_DB_NAME=${POSTGRES_DB}
+      - SECRET_KEY=${SECRET_KEY}
+      - ALGORITHM=${ALGORITHM}
+      - ACCESS_TOKEN_EXPIRE_SECONDS=${ACCESS_TOKEN_EXPIRE_SECONDS}
+      - REFRESH_TOKEN_EXPIRE_SECONDS=${REFRESH_TOKEN_EXPIRE_SECONDS:-604800}
+      - APP_ENV=${APP_ENV:-dev}
+      - DEBUG=${DEBUG:-true}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - API_URL=${API_URL:-http://localhost:8000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - EMAIL_PUBLIC_BASE_URL=${EMAIL_PUBLIC_BASE_URL:-}
+      - BACKEND_CORS_ORIGINS=${BACKEND_CORS_ORIGINS:-[]}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - OTP_CODE_EXPIRE_SECONDS=${OTP_CODE_EXPIRE_SECONDS:-600}
+      - INVITATION_EXPIRE_SECONDS=${INVITATION_EXPIRE_SECONDS:-604800}
+      - INVITATION_EXPIRY_SWEEP_INTERVAL_SECONDS=${INVITATION_EXPIRY_SWEEP_INTERVAL_SECONDS:-60}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
+      - GOOGLE_FRONTEND_REDIRECT_URI=${GOOGLE_FRONTEND_REDIRECT_URI:-http://localhost:3000}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - HEARTBEAT_REDIS_TTL_SECONDS=${HEARTBEAT_REDIS_TTL_SECONDS:-60}
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - RABBITMQ_CONNECT_TIMEOUT=${RABBITMQ_CONNECT_TIMEOUT:-10}
+      - RABBITMQ_MAX_RETRIES=${RABBITMQ_MAX_RETRIES:-3}
+      - RABBITMQ_PUBLISH_TIMEOUT=${RABBITMQ_PUBLISH_TIMEOUT:-10}
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_USERNAME=${MQTT_USERNAME:-}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
+      - ROBOT_COMMAND_TIMEOUT_SECONDS=${ROBOT_COMMAND_TIMEOUT_SECONDS:-60}
+      - ROBOT_COMMANDS_PAUSED=${ROBOT_COMMANDS_PAUSED:-false}
+      - CLEANING_PATH_CLEARANCE_METERS=${CLEANING_PATH_CLEARANCE_METERS:-1.0}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
       mosquitto:
         condition: service_started
-    env_file:
-      - .env
     networks:
       - pleaco-network
 

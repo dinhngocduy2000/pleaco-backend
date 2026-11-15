@@ -99,7 +99,7 @@ def _service(
     map_repository = MapRepositoryStub(record)
     map_repository.other_names = other_names or {}
     map_tags_repository = MapTagsRepositoryStub(existing_tag_ids)
-    async def transaction(callback):
+    async def transaction(callback, context):
         async def flush():
             return None
         return await callback(SimpleNamespace(flush=flush))

@@ -137,6 +137,17 @@ async def insert_station(connection, map_id, robot_id):
 
 
 @pytest.mark.asyncio
+async def test_metadata_created_map_delete_clears_robot_map_id(db):
+    connection, map_ids, robot_ids = db
+    await connection.execute(Map.__table__.delete().where(Map.id == map_ids[0]))
+    rows = (await connection.execute(
+        select(Robot.map_id, Robot.group_id).where(Robot.id.in_(robot_ids))
+    )).all()
+    assert len(rows) == len(robot_ids)
+    assert all(map_id is None and group_id is not None for map_id, group_id in rows)
+
+
+@pytest.mark.asyncio
 async def test_relationships_geometry_headings_and_timestamps(db):
     connection, map_ids, robot_ids = db
     async with AsyncSession(

@@ -33,7 +33,7 @@ from app.core.rbac.role_validation import require_permission
 from app.models.map import Map
 from app.models.robot import Robot
 from app.models.tag import Tag
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 from app.services.docking_station import DockingStationService
 from app.services.environment_zones import EnvironmentZonesService
 
@@ -101,7 +101,9 @@ class MapService:
             if not exists:
                 raise NotFoundException(message="Map not found")
 
-        await self.repo.transaction_wrapper(_ensure_access)
+        await self.repo.transaction_wrapper(
+            _ensure_access, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @require_permission(GroupRole.ADMIN)
     async def save_boundary(
@@ -135,7 +137,9 @@ class MapService:
             )
 
         # Keep the map lock, geometry checks, and boundary write in one transaction.
-        result = await self.repo.transaction_wrapper(_save)
+        result = await self.repo.transaction_wrapper(
+            _save, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         logger.info(
             msg=(
                 f"Saved boundary {result.id} for map {result.map_id} "
@@ -264,7 +268,9 @@ class MapService:
                     ctx=ctx,
                 )
 
-        await self.repo.transaction_wrapper(_save)
+        await self.repo.transaction_wrapper(
+            _save, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
         logger.info(msg=f"Saved layout for map {layout_save.map_id}", context=ctx)
 
     @staticmethod
@@ -358,7 +364,9 @@ class MapService:
             )
             return self._to_map_info(map_record, map_create.robot_ids)
 
-        return await self.repo.transaction_wrapper(_create_map)
+        return await self.repo.transaction_wrapper(
+            _create_map, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     async def _validate_map_name(
         self, session: AsyncSession, group_id: UUID, name: str, ctx: AppContext
@@ -422,7 +430,9 @@ class MapService:
                 ctx=ctx,
             )
 
-        await self.repo.transaction_wrapper(_update)
+        await self.repo.transaction_wrapper(
+            _update, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     async def _validate_map_update_metadata(
         self,
@@ -551,7 +561,9 @@ class MapService:
                 raise NotFoundException(message="Map not found")
             return MapDetailInfo.model_validate(detail)
 
-        return await self.repo.transaction_wrapper(_get_map_detail)
+        return await self.repo.transaction_wrapper(
+            _get_map_detail, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @require_permission(GroupRole.GUEST)
     async def list_maps(
@@ -606,7 +618,9 @@ class MapService:
             )
             return maps, total
 
-        return await self.repo.transaction_wrapper(_list_maps)
+        return await self.repo.transaction_wrapper(
+            _list_maps, DbAccessContext(actor_id=credential.id, group_id=group_id)
+        )
 
     @staticmethod
     def _to_map_info(map_record: Map, robot_ids: list[UUID]) -> MapInfo:

@@ -26,7 +26,7 @@ from app.core.sso_providers.base_sso import BaseSSOStrategy
 from app.external.mail.mail import MailService
 from app.external.queues.topics.user_verification import UserVerificationTopic
 from app.models.user import User
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 from sqlalchemy.ext.asyncio import AsyncSession
 import bcrypt
 from app.core.config import settings
@@ -353,7 +353,9 @@ class AuthService:
                 user.status = UserStatus.INACTIVE
             return await self.repo.user_repo().save_user(session, user)
 
-        user = await self.repo.transaction_wrapper(persist_user)
+        user = await self.repo.transaction_wrapper(
+            persist_user, DbAccessContext(actor_id=None, group_id=None)
+        )
         await self._send_otp_mail(user, ctx=ctx)
 
     async def login_user(
@@ -393,7 +395,9 @@ class AuthService:
                 )
             return user
 
-        user = await self.repo.transaction_wrapper(authenticate)
+        user = await self.repo.transaction_wrapper(
+            authenticate, DbAccessContext(actor_id=None, group_id=None)
+        )
         return await self._generate_tokens(self._to_user_info(user), ctx=ctx)
 
     def get_sso_auth_url(
@@ -463,7 +467,9 @@ class AuthService:
                 user.status = UserStatus.ACTIVE
             return user
 
-        user = await self.repo.transaction_wrapper(provision_user)
+        user = await self.repo.transaction_wrapper(
+            provision_user, DbAccessContext(actor_id=None, group_id=None)
+        )
         return await self._generate_tokens(self._to_user_info(user), ctx=ctx)
 
     async def login_with_sso_callback(
@@ -520,7 +526,9 @@ class AuthService:
                 ctx=ctx,
             )
 
-        await self.repo.transaction_wrapper(validate_and_update_user)
+        await self.repo.transaction_wrapper(
+            validate_and_update_user, DbAccessContext(actor_id=None, group_id=None)
+        )
         await self.repo.user_repo().delete_otp_code(email, ctx=ctx)
 
     async def refresh_token(
@@ -636,7 +644,9 @@ class AuthService:
                 options=options,
             )
 
-        return await self.repo.transaction_wrapper(get_user_profile)
+        return await self.repo.transaction_wrapper(
+            get_user_profile, DbAccessContext(actor_id=user_id, group_id=None)
+        )
 
     async def get_current_user(
         self,

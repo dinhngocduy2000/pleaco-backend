@@ -26,7 +26,7 @@ from app.core.rbac.role_validation import require_permission
 from app.external.mqtt.robot_action import RobotActionMqttGateway
 from app.external.queues.topics.robot_action import RobotActionTopic
 from app.external.redis.robot_commands import RobotCommandStore
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 
 logger = Logger()
 
@@ -80,7 +80,9 @@ class RobotActionService:
         await self.robot_action_topic.publish_command(command)
         logger.info(msg=f"Robot loop payload attempt={command.attempt} payload={command.model_dump_json()}")
 
-    async def _get_robot_context(self, robot_id: UUID) -> RobotActionContext | None:
+    async def _get_robot_context(
+        self, robot_id: UUID, group_id: UUID | None = None, actor_id: UUID | None = None
+    ) -> RobotActionContext | None:
         """Load persisted robot, map, and docking facts in a short transaction.
 
         Args:
@@ -90,8 +92,13 @@ class RobotActionService:
             dict | None: Ownership, connectivity, map dimensions, and docking
             centroid, or None when the robot does not exist.
         """
+        if group_id is None:
+            group_id = await self.registry.resolve_robot_group(robot_id)
+        if group_id is None:
+            return None
         return await self.registry.transaction_wrapper(
-            lambda session: self.registry.robot_action_repo().get_context(session, robot_id)
+            lambda session: self.registry.robot_action_repo().get_context(session, robot_id),
+            DbAccessContext(actor_id=actor_id, group_id=group_id),
         )
 
     async def _get_group_robot_context(
@@ -115,7 +122,9 @@ class RobotActionService:
         """
         if group_id is None or group_id != credential.active_group_id:
             raise ForbiddenException(message="An active group must be selected")
-        context = await self._get_robot_context(robot_id)
+        context = await self._get_robot_context(
+            robot_id, group_id=group_id, actor_id=credential.id
+        )
         if context is None or str(context["group_id"]) != str(group_id):
             raise NotFoundException(message="Robot not found")
         return context

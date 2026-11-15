@@ -105,7 +105,7 @@ def _service(role: GroupRole | None):
     registry = SimpleNamespace(
         map_repo=lambda: map_repository,
         map_tags_repo=lambda: map_tags_repository,
-        transaction_wrapper=lambda callback: callback(SimpleNamespace()),
+        transaction_wrapper=lambda callback, context: callback(SimpleNamespace()),
     )
     return (
         MapService(registry, PermissionServiceStub(role)),

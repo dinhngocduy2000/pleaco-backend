@@ -66,7 +66,7 @@ def setup(
         )
     )
 
-    async def transaction(callback):
+    async def transaction(callback, context):
         return await callback(object())
 
     registry = SimpleNamespace(

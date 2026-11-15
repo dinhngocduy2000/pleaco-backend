@@ -33,7 +33,7 @@ from app.common.exceptions import ForbiddenException
 from app.common.middleware.logger import Logger
 from app.common.schemas.group import GroupMemberInfo
 from app.common.schemas.user import Credential
-from app.repository.registry import Registry
+from app.repository.registry import DbAccessContext, Registry
 
 ROLE_HIERACHY = [
     GroupRole.GUEST,
@@ -132,51 +132,25 @@ class PermissionService:
                 target_group_id = group_id or credential.active_group_id
                 if target_group_id is None:
                     raise ForbiddenException(message="A group must be selected")
-                member_info: GroupMemberInfo | None = None
-                cached_member = (
-                    await self.repo.group_members_repo().get_group_member_redis(
-                        group_id=target_group_id,
-                        member_id=credential.id,
-                        ctx=ctx,
-                    )
+                # Redis may outlive a revoked membership. Always establish tenant
+                # authority from the accepted database membership first.
+                member = await self.repo.group_members_repo().get_group_member_by_id(
+                    session=session,
+                    member_id=credential.id,
+                    group_id=target_group_id,
+                    accepted_only=True,
                 )
-
-                if not cached_member:
-                    member = (
-                        await self.repo.group_members_repo().get_group_member_by_id(
-                            session=session,
-                            member_id=credential.id,
-                            group_id=target_group_id,
-                            accepted_only=True,
-                        )
+                if member is None:
+                    raise ForbiddenException(
+                        message="This user is not found in the current group"
                     )
-                    if member is None:
-                        logger.error(
-                            "User Not found in Permission service", context=ctx
-                        )
-                        raise ForbiddenException(
-                            message="This user is not found in the current group"
-                        )
-                    member_info = GroupMemberInfo(
-                        created_at=member.created_at,
-                        updated_at=member.updated_at,
-                        member_id=member.member_id,
-                        group_id=member.group_id,
-                        role=member.role,
-                    )
-                    await self.repo.group_members_repo().set_group_member_redis(
-                        member=member, ctx=ctx
-                    )
-                else:
-                    member_info = GroupMemberInfo(
-                        created_at=cached_member["created_at"],
-                        updated_at=cached_member["updated_at"],
-                        member_id=cached_member["member_id"],
-                        group_id=cached_member["group_id"],
-                        role=GroupRole(cached_member["role"]),
-                    )
-
-                return member_info
+                return GroupMemberInfo(
+                    created_at=member.created_at,
+                    updated_at=member.updated_at,
+                    member_id=member.member_id,
+                    group_id=member.group_id,
+                    role=member.role,
+                )
 
             except Exception as e:
                 logger.error(
@@ -185,7 +159,9 @@ class PermissionService:
                 )
                 raise
 
-        return await self.repo.transaction_wrapper(_get_group_member)
+        return await self.repo.transaction_wrapper(
+            _get_group_member, DbAccessContext(actor_id=credential.id, group_id=None)
+        )
 
     @staticmethod
     def is_action_executable(

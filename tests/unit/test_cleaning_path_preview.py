@@ -74,7 +74,7 @@ async def test_robot_on_another_map_is_not_found_even_within_group():
     with pytest.raises(NotFoundException):
         await service.preview.__wrapped__(service, map_id=map_id, robot_id=robot_id,
                                           group_id=group_id,
-                                          credential=SimpleNamespace(active_group_id=group_id), ctx=None)
+                                          credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=None)
     service.positions.position.assert_not_awaited()
 
 
@@ -94,7 +94,7 @@ async def test_stale_other_robot_position_rejects_before_planning():
         with pytest.raises(BadRequestException, match="stale"):
             await service.preview.__wrapped__(service, map_id=map_id, robot_id=robot_id,
                                               group_id=group_id,
-                                              credential=SimpleNamespace(active_group_id=group_id), ctx=None)
+                                              credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=None)
         planner.assert_not_called()
 
 
@@ -114,7 +114,7 @@ async def test_invalid_layout_or_position_rejected(change):
     with pytest.raises(BadRequestException):
         await service.preview.__wrapped__(service, map_id=map_id, robot_id=robot_id,
                                           group_id=group_id,
-                                          credential=SimpleNamespace(active_group_id=group_id), ctx=None)
+                                          credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=None)
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_missing_requested_position_uses_assigned_dock_centroid():
     with patch("app.services.cleaning_path.plan_cleaning_path", return_value={"ring_layer_1": [(1, 1)]}) as planner:
         route = await service.preview.__wrapped__(
             service, map_id=map_id, robot_id=robot_id, group_id=group_id,
-            credential=SimpleNamespace(active_group_id=group_id), ctx=None,
+            credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=None,
         )
     assert route == {"ring_layer_1": [(1, 1)]}
     assert planner.call_args.args[2] == (1.0, 1.0)
@@ -142,7 +142,7 @@ async def test_missing_other_robot_position_uses_its_map_dock():
     with patch("app.services.cleaning_path.plan_cleaning_path", return_value={"ring_layer_1": [(1, 1)]}) as planner:
         await service.preview.__wrapped__(
             service, map_id=map_id, robot_id=robot_id, group_id=group_id,
-            credential=SimpleNamespace(active_group_id=group_id), ctx=None,
+            credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=None,
         )
     assert Point(9, 9) in planner.call_args.args[3]
 
@@ -158,7 +158,7 @@ async def test_missing_other_robot_position_without_dock_still_rejected():
     with pytest.raises(BadRequestException, match="assigned docking station"):
         await service.preview.__wrapped__(
             service, map_id=map_id, robot_id=robot_id, group_id=group_id,
-            credential=SimpleNamespace(active_group_id=group_id), ctx=None,
+            credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=None,
         )
 
 
@@ -177,7 +177,7 @@ async def test_robot_must_be_online_with_fresh_heartbeat(status, heartbeat):
     with pytest.raises(BadRequestException):
         await service.preview.__wrapped__(service, map_id=map_id, robot_id=robot_id,
                                           group_id=group_id,
-                                          credential=SimpleNamespace(active_group_id=group_id), ctx=None)
+                                          credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=None)
     service.positions.position.assert_not_awaited()
 
 
@@ -192,7 +192,7 @@ async def test_context_flows_to_layout_planner_and_logs(caplog):
     }})
     service.repository.layout = AsyncMock(return_value=snapshot)
 
-    async def transaction(callback):
+    async def transaction(callback, context):
         return await callback(SimpleNamespace())
 
     service.registry.transaction_wrapper.side_effect = transaction
@@ -200,7 +200,7 @@ async def test_context_flows_to_layout_planner_and_logs(caplog):
     with patch("app.services.cleaning_path.plan_cleaning_path", return_value={"ring_layer_1": [(1, 1)]}) as planner:
         result = await service.preview.__wrapped__(
             service, map_id=map_id, robot_id=robot_id, group_id=group_id,
-            credential=SimpleNamespace(active_group_id=group_id), ctx=ctx,
+            credential=SimpleNamespace(id=uuid4(), active_group_id=group_id), ctx=ctx,
         )
     assert result == {"ring_layer_1": [(1, 1)]}
     assert service.repository.layout.await_args.args[-1] is ctx
