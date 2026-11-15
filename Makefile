@@ -1,6 +1,7 @@
 PYTHON ?= python3.11
 VENV ?= .venv
 VENV_PYTHON = $(VENV)/bin/python
+DEV_PORT ?= 8000
 
 # Runtime configuration is loaded by the application and Docker Compose.
 .DEFAULT_GOAL := help
@@ -45,7 +46,7 @@ install-dev: venv
 	"$(VENV_PYTHON)" -m pip install -r requirements.txt -r requirements-dev.txt
 
 dev:
-	"$(VENV_PYTHON)" -m uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
+	DEV_PORT=$(DEV_PORT) "$(VENV_PYTHON)" scripts/start-api.py --local
 
 debug:
 	"$(VENV_PYTHON)" -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn app.cmd.main:app --reload --host 0.0.0.0 --port 8000
@@ -55,9 +56,6 @@ dev-test:
 
 docker-up:
 	docker-compose up -d
-	@echo "Waiting for services to start..."
-	@sleep 5
-	docker-compose exec api alembic upgrade head
 
 start-db: 
 	docker-compose up -d db
@@ -66,7 +64,7 @@ docker-down:
 	docker-compose down
 
 migrate:
-	alembic upgrade head
+	docker compose run --rm db-migrate
 
 migration-downgrade:
 	alembic downgrade -1

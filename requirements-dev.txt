@@ -2,6 +2,7 @@ aioredis==2.0.1
 aiosmtplib==3.0.2
 annotated-doc==0.0.4
 annotated-types==0.7.0
+alembic==1.19.2
 anyio==4.12.1
 async-timeout==5.0.1
 asyncpg==0.30.0

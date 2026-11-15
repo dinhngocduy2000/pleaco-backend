@@ -11,7 +11,6 @@ import sys
 # Add the parent directory to the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from app.core.config import settings
 from app.core.database import Base
 from app.models import *  # noqa: Import all models
 
@@ -19,8 +18,8 @@ from app.models import *  # noqa: Import all models
 # access to the values within the .ini file in use.
 config = context.config
 
-# Set the sqlalchemy.url from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# The migration container receives only its provisioning database URL.
+config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"].replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
