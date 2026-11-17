@@ -29,7 +29,7 @@ Route by **task intent**, not by keywords alone. For non-trivial work, select th
 | Python docstrings, API documentation, developer guides, or documentation-focused changes | `code-documenter` | Domain-specific skill for the feature being documented |
 | SQL query construction, joins, CTEs, window functions, or general relational query design | `sql-pro` | `postgres-pro` for PostgreSQL-specific behavior |
 | PostgreSQL schema/database behavior, extensions, JSONB, administration, migrations, or database internals | `postgres-pro` | `sql-pro` for complex SQL; `fastapi-expert` for ORM/application integration |
-| Slow queries, indexes, query plans, locks, contention, or measured database tuning | `database-optimizer` | `postgres-pro` for PostgreSQL-specific diagnosis |
+| Slow queries, indexes, query plans, locks, contention, or measured database tuning | `postgres-pro` for PostgreSQL-specific diagnosis |
 | Implementing authentication, RBAC, JWT handling, validation, secret handling, or other security controls | `secure-code-guardian` | `fastapi-expert` for API code; `security-reviewer` for a requested audit |
 | Security audits, vulnerability reviews, dependency scans, threat findings, or remediation reviews | `security-reviewer` | `secure-code-guardian` when implementing a fix |
 | WebSocket connections, rooms, presence, heartbeat, reconnection, Redis pub/sub, or realtime fan-out | `websocket-engineer` | `fastapi-expert` for FastAPI endpoints; `pleco-backend-architecture` for event boundaries |
@@ -38,7 +38,7 @@ Route by **task intent**, not by keywords alone. For non-trivial work, select th
 
 - New robot telemetry ingestion: `pleco-backend-architecture` → `fastapi-expert`; add `websocket-engineer` if modifying delivery to clients.
 - New authenticated API endpoint: `fastapi-expert` + `secure-code-guardian`; add `api-designer` only if defining/changing the contract.
-- Slow PostgreSQL query: `database-optimizer` + `postgres-pro`; add `sql-pro` if rewriting SQL.
+- Slow PostgreSQL query: `postgres-pro`; add `sql-pro` if rewriting SQL.
 - Robot command security review: `security-reviewer` + `pleco-backend-architecture`; add `secure-code-guardian` when fixing code.
 
 If no specialist skill matches a routine task, follow repository conventions without forcing a skill. Existing Pleco code and these repository rules take precedence over generic 

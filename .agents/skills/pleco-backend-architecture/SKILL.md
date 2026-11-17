@@ -258,9 +258,6 @@ Handler layers.
 Use `sql-pro` / `postgres-pro` for SQL and PostgreSQL specifics, but keep database access inside
 Repositories.
 
-Use `database-optimizer` for measured database performance work. Optimized queries still belong in
-the Repository layer.
-
 Use `secure-code-guardian` for security-sensitive implementation. Authentication extraction and
 HTTP security orchestration remain Handler/Router concerns as appropriate; reusable authorization
 rules belong in Services; persistence stays in Repositories.
