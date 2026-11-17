@@ -10,7 +10,7 @@ metadata:
   role: specialist
   scope: implementation
   output-format: code
-  related-skills: database-optimizer, devops-engineer, sre-engineer
+  related-skills: devops-engineer, sre-engineer
 ---
 
 # PostgreSQL Pro

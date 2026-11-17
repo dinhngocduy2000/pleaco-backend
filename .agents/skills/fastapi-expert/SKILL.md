@@ -36,16 +36,19 @@ Deep expertise in async Python, Pydantic V2, and production-grade API developmen
 
 > **Checkpoint after each step:** confirm schemas validate correctly, endpoints return expected HTTP status codes, and `/docs` reflects the intended API surface before proceeding.
 
-## Minimal Complete Example
+## Minimal Complete Example — Layered User Creation
 
-Schema + endpoint + dependency injection in one cohesive unit:
+Respect the application's existing architecture. The example below keeps FastAPI route registration
+in the Router, HTTP concerns in the Handler, business rules in the Service, and SQLAlchemy access
+in the Repository. Adapt dependency wiring and transaction ownership to the repository's existing
+conventions rather than introducing a competing pattern.
 
 ```python
 # schemas.py
-from pydantic import BaseModel, EmailStr, field_validator, model_config
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 
 class UserCreate(BaseModel):
-    model_config = model_config(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     email: EmailStr
     password: str
@@ -59,7 +62,7 @@ class UserCreate(BaseModel):
         return v
 
 class UserResponse(BaseModel):
-    model_config = model_config(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     email: EmailStr
@@ -67,45 +70,105 @@ class UserResponse(BaseModel):
 ```
 
 ```python
-# routers/users.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Annotated
-
-from app.database import get_db
-from app.schemas import UserCreate, UserResponse
-from app import crud
-
-router = APIRouter(prefix="/users", tags=["users"])
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-
-@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(payload: UserCreate, db: DbDep) -> UserResponse:
-    existing = await crud.get_user_by_email(db, payload.email)
-    if existing:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
-    return await crud.create_user(db, payload)
-```
-
-```python
-# crud.py
+# repositories/users.py
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import User
-from app.schemas import UserCreate
+
+class UserRepository:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def get_by_email(self, email: str) -> User | None:
+        result = await self.db.execute(select(User).where(User.email == email))
+        return result.scalar_one_or_none()
+
+    async def create(self, *, email: str, hashed_password: str, name: str | None) -> User:
+        user = User(email=email, hashed_password=hashed_password, name=name)
+        self.db.add(user)
+        await self.db.commit()  # Example only; preserve the project's transaction policy.
+        await self.db.refresh(user)
+        return user
+```
+
+```python
+# services/users.py
+from app.models import User
+from app.repositories.users import UserRepository
 from app.security import hash_password
 
-async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
-    result = await db.execute(select(User).where(User.email == email))
-    return result.scalar_one_or_none()
+class EmailAlreadyRegistered(Exception):
+    pass
 
-async def create_user(db: AsyncSession, payload: UserCreate) -> User:
-    user = User(email=payload.email, hashed_password=hash_password(payload.password), name=payload.name)
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
+class UserService:
+    def __init__(self, repository: UserRepository) -> None:
+        self.repository = repository
+
+    async def create_user(self, *, email: str, password: str, name: str | None) -> User:
+        if await self.repository.get_by_email(email):
+            raise EmailAlreadyRegistered()
+        return await self.repository.create(
+            email=email,
+            hashed_password=hash_password(password),
+            name=name,
+        )
+```
+
+```python
+# dependencies.py — use existing application dependency/session conventions
+from typing import Annotated
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.repositories.users import UserRepository
+from app.services.users import UserService
+
+async def get_user_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserService:
+    return UserService(UserRepository(db))
+```
+
+```python
+# handlers/users.py
+from typing import Annotated
+from fastapi import Depends, HTTPException, status
+from app.dependencies import get_user_service
+from app.schemas import UserCreate, UserResponse
+from app.services.users import EmailAlreadyRegistered, UserService
+
+class UserHandler:
+    async def create_user(
+        self,
+        payload: UserCreate,
+        service: Annotated[UserService, Depends(get_user_service)],
+    ) -> UserResponse:
+        try:
+            user = await service.create_user(
+                email=payload.email, password=payload.password, name=payload.name
+            )
+        except EmailAlreadyRegistered as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered",
+            ) from exc
+        return UserResponse.model_validate(user)
+```
+
+```python
+# routers/users.py
+from fastapi import APIRouter, status
+from app.handlers.users import UserHandler
+from app.schemas import UserResponse
+
+router = APIRouter(prefix="/users", tags=["users"])
+router.add_api_route(
+    path="/",
+    endpoint=UserHandler().create_user,
+    methods=["POST"],
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 ```
 
 ## JWT Authentication Snippet
