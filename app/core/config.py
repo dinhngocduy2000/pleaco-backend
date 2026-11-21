@@ -77,6 +77,8 @@ class Settings(BaseAppSettings):
     MQTT_PASSWORD: str = ""
     ROBOT_COMMAND_TIMEOUT_SECONDS: PositiveInt = 60
     ROBOT_COMMANDS_PAUSED: bool = False
+    # Enable admission after all robot-action consumers and reconcilers are upgraded.
+    CLEANING_TASKS_ENABLED: bool = False
     # Buffer non-traversable layout features by this many map meters.
     CLEANING_PATH_CLEARANCE_METERS: PositiveFloat = 1.0
 

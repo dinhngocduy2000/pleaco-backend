@@ -103,8 +103,15 @@ async def dispatch_robot_command(
     message: RobotCommand, active_command: RobotCommandRecord, *,
     store: RobotCommandStore, gateway: RobotActionMqttGateway,
     clock: Callable[[], datetime], command_deadline: Callable[[], str],
+    claim: Callable[[RobotCommandRecord], Awaitable[bool]] | None = None,
+    keep_claim_on_error: bool = False,
 ) -> None:
-    """Save dispatch intent, publish through MQTT, and mark confirmation."""
+    """Save dispatch intent, publish through MQTT, and mark broker confirmation.
+
+    A custom claim can verify occupancy and update task progress atomically.
+    Keeping the claim on error preserves the reservation when publication has
+    an uncertain outcome, so recovery can retry the same command identity.
+    """
     if active_command["status"] == CommandStatus.QUEUED.value:
         pending_command: RobotCommandRecord = {
             **active_command,
@@ -112,20 +119,24 @@ async def dispatch_robot_command(
             "updated_at": clock().isoformat(),
             "deadline": command_deadline(),
         }
-        if not await store.transition(active_command, pending_command):
+        claimed = await claim(pending_command) if claim else await store.transition(active_command, pending_command)
+        if not claimed:
             return
     elif (
         active_command["status"] == CommandStatus.AWAITING_ACK.value
         and not await store.dispatched(active_command)
     ):
         pending_command = active_command
+        if claim is not None and not await claim(pending_command):
+            return
     else:
         return
     try:
         await gateway.publish_command(message, deadline=datetime.fromisoformat(pending_command["deadline"]))
         await store.mark_dispatched(pending_command)
     except Exception:
-        await store.transition(pending_command, active_command)
+        if not keep_claim_on_error:
+            await store.transition(pending_command, active_command)
         raise
 
 

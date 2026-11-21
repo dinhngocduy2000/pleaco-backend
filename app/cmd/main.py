@@ -62,7 +62,10 @@ from app.services.robot_action import RobotActionService
 from app.services.cleaning_path import CleaningPathService
 from app.repository.cleaning_path import CleaningPathRepository
 from app.handler.cleaning_path import CleaningPathHandler
+from app.handler.cleaning_task import CleaningTaskHandler
 from app.router.cleaning_path import CleaningPathRouter
+from app.router.cleaning_task import CleaningTaskRouter
+from app.services.cleaning_task import CleaningTaskService
 
 
 class App:
@@ -96,8 +99,11 @@ class App:
             robot_command_store = RobotCommandStore(redis_client)
             robot_action_topic = RobotActionTopic(rabbitmq_client)
             robot_action_mqtt_gateway = RobotActionMqttGateway(robot_action_topic, robot_command_store)
+            # Planning and dispatch read the same map layout through this repository.
+            cleaning_path_repository = CleaningPathRepository()
             robot_action_service = RobotActionService(
-                registry, permission_service, robot_command_store, robot_action_topic, robot_action_mqtt_gateway
+                registry, permission_service, robot_command_store, robot_action_topic,
+                robot_action_mqtt_gateway, cleaning_path_repository=cleaning_path_repository,
             )
             self.application.state.robot_action_mqtt_gateway = robot_action_mqtt_gateway
             bot_status_service = BotStatusService(
@@ -175,10 +181,12 @@ class App:
             robot_action_handler = RobotActionHandler(robot_action_service)
             tag_handler = TagHandler(service=tag_service)
             map_handler = MapHandler(service=map_service)
-            # Wire the preview's repository, service, and handler to the same
-            # registry and confirmed-position store used by robot actions.
-            cleaning_path_handler = CleaningPathHandler(CleaningPathService(
-                registry, permission_service, robot_command_store, CleaningPathRepository()
+            cleaning_path_service = CleaningPathService(
+                registry, permission_service, robot_command_store, cleaning_path_repository
+            )
+            cleaning_path_handler = CleaningPathHandler(cleaning_path_service)
+            cleaning_task_handler = CleaningTaskHandler(CleaningTaskService(
+                cleaning_path_service, robot_action_service, permission_service
             ))
 
             # ------------ Router ------------
@@ -193,8 +201,8 @@ class App:
             )
             tag_router = TagRouter(handler=tag_handler)
             map_router = MapRouter(handler=map_handler)
-            # Keep the preview route separate from other map write routes.
             cleaning_path_router = CleaningPathRouter(cleaning_path_handler)
+            cleaning_task_router = CleaningTaskRouter(cleaning_task_handler)
             self.application.include_router(
                 user_router.router,
                 prefix=settings.API_V1_PREFIX + "/users",
@@ -230,9 +238,12 @@ class App:
                 prefix=settings.API_V1_PREFIX + "/maps",
                 tags=["Maps"],
             )
-            # Publish the read-only cleaning path preview beneath /maps.
             self.application.include_router(
                 cleaning_path_router.router,
+                prefix=settings.API_V1_PREFIX + "/maps",
+            )
+            self.application.include_router(
+                cleaning_task_router.router,
                 prefix=settings.API_V1_PREFIX + "/maps",
             )
             # Command broker availability must not block auth/HTTP routes.

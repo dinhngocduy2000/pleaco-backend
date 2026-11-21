@@ -20,9 +20,32 @@ logger = Logger()
 class CleaningPathRepository:
     """Load map geometry and robot assignments without planning in SQL."""
 
+    async def lock_for_dispatch(self, session: AsyncSession, map_id: UUID, group_id: UUID) -> bool:
+        """Fence layout writers until the bounded dispatch transaction ends."""
+        locked_map_id = await session.scalar(
+            select(Map.id)
+            .where(Map.id == map_id, Map.group_id == group_id)
+            .with_for_update(read=True, nowait=True)
+        )
+        return locked_map_id is not None
+
+    async def motion_layout(self, session: AsyncSession, map_id: UUID, group_id: UUID) -> dict | None:
+        """Read the scope and peer identifiers used by ordinary movement dispatch."""
+        row = (await session.execute(
+            select(Map.dimension_x, Map.dimension_y).where(Map.id == map_id, Map.group_id == group_id)
+        )).one_or_none()
+        if row is None:
+            return None
+        robots = (await session.execute(
+            select(Robot.id, Robot.group_id, Robot.map_id)
+            .where(Robot.map_id == map_id, Robot.group_id == group_id)
+        )).all()
+        return {"width": row[0], "height": row[1], "robots": robots}
+
     async def layout(self, session: AsyncSession, map_id: UUID, group_id: UUID,
                      ctx: AppContext) -> dict | None:
         """Return the layout fields needed for one preview request."""
+        logger.debug(msg=f"Querying cleaning layout for map {map_id}", context=ctx)
         # 1. Scope the map by the active group before reading its dimensions and
         # current boundary source; absence is reported as a map-level 404.
         result = await session.execute(

@@ -54,6 +54,9 @@ class RobotCommandRecord(TypedDict):
     deadline: str
     failure_reason: str | None
     loop: NotRequired[bool]
+    # Internal scheduling fields for commands owned by a cleaning task.
+    task_id: NotRequired[str]
+    not_before: NotRequired[str]
 
 
 class RobotPositionRecord(RobotCoordinates):
