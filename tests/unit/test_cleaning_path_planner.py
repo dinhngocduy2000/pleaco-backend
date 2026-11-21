@@ -1,9 +1,11 @@
 import math
+from uuid import uuid4
 
 import pytest
 from shapely.geometry import LineString, Point, box
 
 from app.services.cleaning_path_planner import PlanningError, plan_cleaning_path
+from app.common.context import AppContext
 
 
 def flatten(sections):
@@ -49,6 +51,16 @@ def test_obstacle_segments_are_clear():
 def test_unreachable_ring_is_rejected():
     with pytest.raises(PlanningError):
         plan_cleaning_path(12, 12, (2, 2), [box(0, 5, 12, 7)])
+
+
+def test_planning_failure_logs_request_context(caplog):
+    ctx = AppContext(trace_id=uuid4(), action="PREVIEW_CLEANING_PATH", actor=uuid4())
+    with pytest.raises(PlanningError):
+        plan_cleaning_path(12, 12, (2, 2), [box(0, 5, 12, 7)], ctx=ctx)
+    assert any(
+        str(ctx.trace_id) in record.message and "cannot reach" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize("start,dock", [

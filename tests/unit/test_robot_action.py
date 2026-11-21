@@ -28,11 +28,14 @@ from app.common.schemas.robot_action import (
     RobotCommandRecord, RobotCommandRequest, RobotPositionRecord,
     RobotLoopRequest,
 )
+from app.common.schemas.cleaning_task import CleaningTaskStatus
+from app.common.utils.robot_actions import to_robot_command
 from app.core.config import settings
 from app.core.rbac.permissions import PermissionService
 from app.handler.robot_action import RobotActionHandler
 from app.router.robot_action import RobotActionRouter
 from app.services.robot_action import RobotActionService
+from app.services.cleaning_path import layout_signature
 
 
 T = TypeVar("T")
@@ -128,6 +131,180 @@ def envelope(info: RobotCommandInfo) -> RobotCommand:
 
 def ack(command: RobotCommand, success: bool = True, **changes: object) -> RobotAcknowledgement:
     return RobotAcknowledgement.model_validate({**command.model_dump(mode="json"), "ack": success, **changes})
+
+
+class InMemoryCleaningCommandStore(MemoryStore):
+    """Model cleaning task state transitions for service-level tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tasks = {}
+        self.moves = {}
+        self.peers = {}
+
+    async def reserve_task(self, command, position, task, moves) -> bool:
+        if not await self.reserve(command, position):
+            return False
+        self.tasks[task["task_id"]] = deepcopy(task)
+        self.moves[task["task_id"]] = moves
+        return True
+
+    async def get_task(self, task_id):
+        return deepcopy(self.tasks.get(str(task_id)))
+
+    async def has_task_moves(self, task_id) -> bool:
+        return task_id in self.moves
+
+    async def get_task_move(self, task_id, index):
+        return self.moves[task_id][index]
+
+    async def peer_state(self, robot_id):
+        return SimpleNamespace(position=self.peers.get(robot_id), command=None, guard={},
+                               position_invalid=False, command_invalid=False, cleaning_task_active=False)
+
+    async def transition_task(
+        self, previous, updated, task, updated_task, *,
+        terminal=False, position=None, next_command=None, guard=None,
+    ) -> bool:
+        if self.tasks[task["task_id"]] != task:
+            return False
+        if not await self.transition(previous, updated, terminal=terminal, position=position):
+            return False
+        if next_command is not None:
+            self.records[next_command["command_id"]] = deepcopy(next_command)
+            self.active_ids[previous["robot_id"]] = next_command["command_id"]
+        self.tasks[task["task_id"]] = deepcopy(updated_task)
+        return True
+
+
+@pytest.mark.parametrize("clear_on_last_retry", [True, False])
+async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on_last_retry, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(settings, "CLEANING_TASKS_ENABLED", True)
+    monkeypatch.setattr(settings, "CLEANING_PATH_CLEARANCE_METERS", 0.1)
+    s = setup()
+    service = s.robot_action_service
+    store = service.robot_command_store = InMemoryCleaningCommandStore()
+    robot_id, group_id, map_id = (s.context[key] for key in ("robot_id", "group_id", "map_id"))
+    peer_id = uuid4()
+    layout = {
+        "width": Decimal("10"), "height": Decimal("10"), "boundary": "DIMENSIONS",
+        "robots": [SimpleNamespace(id=current_id, group_id=group_id, map_id=map_id)
+                   for current_id in (robot_id, peer_id)],
+        "zones": [], "docks": [],
+    }
+    service.cleaning_path_repository = SimpleNamespace(
+        lock_for_dispatch=AsyncMock(return_value=True), layout=AsyncMock(return_value=layout),
+    )
+
+    def set_peer(x, y) -> None:
+        store.peers[peer_id] = {
+            "robot_id": str(peer_id), "group_id": str(group_id), "map_id": str(map_id), "x": x, "y": y,
+        }
+
+    def advance(seconds) -> None:
+        s.now[0] += timedelta(seconds=seconds)
+        store.redis_client.get.return_value = s.now[0].isoformat()
+
+    def restart_service() -> RobotActionService:
+        return RobotActionService(
+            service.registry, service.permission_service, store,
+            s.robot_action_topic, s.robot_action_mqtt_gateway,
+            clock=service.clock, cleaning_path_repository=service.cleaning_path_repository,
+        )
+
+    advance(0)
+    set_peer(9, 9)
+    start = {"x": 4.0, "y": 4.0}
+    turn = {"x": 5.0, "y": 4.0}
+    task = await service.start_cleaning_task(
+        robot_id=robot_id, map_id=map_id, group_id=group_id, actor_id=s.kwargs["credential"].id,
+        layout_signature=layout_signature(layout), start_position=None,
+        ctx=s.kwargs["ctx"],
+        moves=[
+            {"origin": start, "target": turn, "distance": "1m", "direction": Direction.EAST},
+            {"origin": turn, "target": start, "distance": "1m", "direction": Direction.WEST},
+        ],
+    )
+    first = to_robot_command(await store.active(robot_id))
+    await service.process_command(first)
+    await service.process_message(ack(first))
+    assert store.tasks[str(task.task_id)]["trace_id"] == str(s.kwargs["ctx"].trace_id)
+    assert any(
+        str(s.kwargs["ctx"].trace_id) in record.message and "WAITING_INTERVAL" in record.message
+        for record in caplog.records
+    )
+    service = restart_service()
+    await service.process_message(ack(first))
+    next_command = to_robot_command(await store.active(robot_id))
+    await service.process_message(ack(next_command))
+    assert first.command_id != next_command.command_id and next_command.attempt == 1
+    assert (await service.get_cleaning_task(task.task_id)).completed_moves == 1
+    with pytest.raises(BadRequestException) as busy:
+        await submit(s)
+    assert busy.value.status_code == 409
+    set_peer(4.5, 4)
+    for check in range(6):
+        advance(9)
+        await service.process_command(next_command)
+        assert s.robot_action_mqtt_gateway.publish_command.await_count == 1
+        advance(1)
+        if check == 5 and clear_on_last_retry:
+            set_peer(9, 9)
+        await service.process_command(next_command)
+        updated = await service.get_cleaning_task(task.task_id)
+        assert updated.occupancy_retries_used == check
+        if check < 5:
+            assert updated.status == CleaningTaskStatus.WAITING_OCCUPANCY
+        if check == 0:
+            service = restart_service()
+    if clear_on_last_retry:
+        assert updated.status == CleaningTaskStatus.AWAITING_ACK
+        await service.process_message(ack(next_command))
+        assert (await service.get_cleaning_task(task.task_id)).status == CleaningTaskStatus.SUCCEEDED
+        assert (await store.position(robot_id))["x"] == start["x"]
+    else:
+        assert updated.status == CleaningTaskStatus.FAILED
+        assert "blocked" in updated.terminal_reason
+        assert s.robot_action_mqtt_gateway.publish_command.await_count == 1
+        assert (await store.position(robot_id))["x"] == turn["x"]
+    assert await store.active(robot_id) is None
+
+
+async def test_cleaning_admission_requires_rollout_opt_in(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "CLEANING_TASKS_ENABLED", False)
+    s = setup()
+    with pytest.raises(BadRequestException) as disabled:
+        await s.robot_action_service.ensure_cleaning_task_can_start(
+            robot_id=s.context["robot_id"], map_id=s.context["map_id"], group_id=s.context["group_id"],
+            actor_id=s.kwargs["credential"].id,
+        )
+    assert disabled.value.status_code == 503
+    s.robot_action_topic.publish_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("peer_status", ["QUEUED", "AWAITING_ACK"])
+async def test_ordinary_move_yields_to_active_cleaning_robot(peer_status, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "CLEANING_PATH_CLEARANCE_METERS", 0.1)
+    s = setup()
+    service = s.robot_action_service
+    robot_id, group_id, map_id = (s.context[key] for key in ("robot_id", "group_id", "map_id"))
+    peer_id = uuid4()
+    layout = {"width": 20, "height": 20, "robots": [SimpleNamespace(id=peer_id, group_id=group_id, map_id=map_id)]}
+    peer_origin = {"x": 4, "y": 4.5} if peer_status == "QUEUED" else {"x": 3.5, "y": 4.5}
+    peer = {
+        "robot_id": str(peer_id), "group_id": str(group_id), "map_id": str(map_id),
+        "origin": peer_origin, "target": {"x": 4.5, "y": 4.5}, "status": peer_status,
+    }
+    service.cleaning_path_repository = SimpleNamespace(motion_layout=AsyncMock(return_value=layout))
+    store = service.robot_command_store
+    store.peer_state = AsyncMock(return_value=SimpleNamespace(
+        position={**peer, **peer_origin}, command=peer, guard={},
+        position_invalid=False, command_invalid=False, cleaning_task_active=True,
+    ))
+    await submit(s)
+    command = await store.active(robot_id)
+    await service.process_command(to_robot_command(command))
+    s.robot_action_mqtt_gateway.publish_command.assert_not_awaited()
 
 
 @pytest.mark.asyncio
