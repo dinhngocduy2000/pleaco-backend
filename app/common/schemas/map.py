@@ -313,3 +313,19 @@ class MapDetailInfo(BaseModel):
     )
     zones: list[MapDetailZoneInfo] = Field(default_factory=list)
     docking_stations: list[MapDetailDockingStationInfo] = Field(default_factory=list)
+
+
+class MapRobotPosition(BaseModel):
+    x: float
+    y: float
+    updated_at: datetime
+
+
+class MapPositionRobot(BaseModel):
+    id: UUID
+    name: str
+    position: MapRobotPosition | None
+
+
+class MapRobotPositions(BaseModel):
+    robots: list[MapPositionRobot]

@@ -150,6 +150,7 @@ class App:
                 permission_service=permission_service,
                 environment_zones_service=environment_zones_service,
                 docking_station_service=docking_station_service,
+                redis_client=redis_client,
             )
             session_service = SocketSessionService(socket_server)
             map_room_service = MapRoomService(

@@ -1,3 +1,4 @@
+import json
 from math import isfinite
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.common.exceptions import (
 from app.common.middleware.logger import Logger
 from app.common.schemas.geometry import PolygonGeometry
 from app.common.schemas.map import (
+    MapRobotPositions, MapPositionRobot, MapRobotPosition,
     MapBoundaryInfo,
     MapBoundarySaveDTO,
     MapCreateDTO,
@@ -30,6 +32,9 @@ from app.common.schemas.tags import TagInfo, TagListInfo
 from app.common.schemas.user import Credential
 from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
+from app.common.schemas.robot_action import RobotPosition
+from app.external.redis.robot_commands import RobotCommandStore
+from app.external.redis.redis import RedisClient
 from app.models.map import Map
 from app.models.robot import Robot
 from app.models.tag import Tag
@@ -49,7 +54,9 @@ class MapService:
         permission_service: PermissionService,
         environment_zones_service: EnvironmentZonesService | None = None,
         docking_station_service: DockingStationService | None = None,
+        redis_client: RedisClient | None = None,
     ) -> None:
+        self.redis_client = redis_client
         self.repo = repo
         self.permission_service = permission_service
         self.environment_zones_service = environment_zones_service
@@ -540,6 +547,40 @@ class MapService:
                 message="One or more robots are already assigned to a map"
             )
         return robots
+
+    @require_permission(GroupRole.GUEST)
+    async def get_robot_positions(self, map_id: UUID, group_id: UUID | None, credential: Credential, ctx: AppContext) -> MapRobotPositions:
+        if group_id is None or group_id != credential.active_group_id:
+            raise ForbiddenException(message="A group must be selected")
+
+        async def lookup(session: AsyncSession):
+            return await self.repo.map_repo().get_position_robots(session, map_id, group_id, ctx)
+
+        robots = await self.repo.transaction_wrapper(lookup, DbAccessContext(actor_id=credential.id, group_id=group_id))
+        if robots is None:
+            raise NotFoundException(message="Map not found")
+        try:
+            if self.redis_client is None:
+                raise RuntimeError("Redis is not configured")
+            values = await self.redis_client.mget([RobotCommandStore.position_key(robot[0]) for robot in robots])
+        except Exception as error:
+            logger.error(msg=f"Failed to read robot positions: {error}", context=ctx)
+            raise BadRequestException(message="Robot positions unavailable", status_code=503) from error
+        result = []
+        for (robot_id, name, dock_x, dock_y, dock_updated_at), value in zip(robots, values, strict=True):
+            position = None
+            if value is None and dock_x is not None and dock_y is not None and dock_updated_at is not None:
+                position = MapRobotPosition(x=dock_x, y=dock_y, updated_at=dock_updated_at)
+            if value is not None:
+                try:
+                    record = RobotPosition.model_validate(json.loads(value))
+                    if record.robot_id != robot_id or record.group_id != group_id or record.map_id != map_id or not isfinite(record.x) or not isfinite(record.y):
+                        raise ValueError("Position identity or coordinates invalid")
+                    position = MapRobotPosition(x=record.x, y=record.y, updated_at=record.updated_at)
+                except (ValueError, TypeError):
+                    logger.warning(msg=f"Invalid position record for robot {robot_id}", context=ctx)
+            result.append(MapPositionRobot(id=robot_id, name=name, position=position))
+        return MapRobotPositions(robots=result)
 
     @require_permission(GroupRole.GUEST)
     async def get_map_detail(

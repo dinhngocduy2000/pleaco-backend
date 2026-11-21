@@ -19,6 +19,20 @@ from app.models.tag import Tag
 
 
 class MapRepository:
+    async def get_position_robots(self, session: AsyncSession, map_id: UUID, group_id: UUID, ctx: AppContext):
+        result = await session.execute(
+            select(Map.id, Robot.id.label("robot_id"), Robot.name,
+                   func.ST_X(func.ST_Centroid(DockingStation.geometry)).label("dock_x"),
+                   func.ST_Y(func.ST_Centroid(DockingStation.geometry)).label("dock_y"),
+                   DockingStation.updated_at.label("dock_updated_at"))
+            .outerjoin(Robot, (Robot.map_id == Map.id) & (Robot.group_id == group_id))
+            .outerjoin(DockingStation, (DockingStation.robot_id == Robot.id) & (DockingStation.map_id == Map.id))
+            .where(Map.id == map_id, Map.group_id == group_id)
+            .order_by(Robot.name.asc(), Robot.id.asc())
+        )
+        rows = result.all()
+        return None if not rows else [(row.robot_id, row.name, row.dock_x, row.dock_y, row.dock_updated_at) for row in rows if row.robot_id is not None]
+
     async def exists_by_id_and_group(
         self,
         session: AsyncSession,

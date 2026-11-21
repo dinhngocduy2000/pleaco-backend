@@ -414,6 +414,17 @@ async def test_real_twenty_second_roundtrip_and_duplicate_ack(harness: SimpleNam
         position = await harness.robot_command_store.position(harness.robot_id)
         assert (position["x"], position["y"]) == (5, 6)
         assert position["group_id"] == str(harness.group_id)
+        # Read the very same Redis position through the map snapshot service.
+        from app.services.map import MapService
+        harness.registry.map_repo = lambda: SimpleNamespace(
+            get_position_robots=AsyncMock(return_value=[(harness.robot_id, "Robot", None, None, None)])
+        )
+        map_service = MapService(harness.registry, harness.permission_service, redis_client=harness.robot_command_store.redis_client)
+        snapshot = await map_service.get_robot_positions(
+            map_id=harness.map_id, group_id=harness.group_id,
+            credential=harness.auth["credential"], ctx=harness.auth["ctx"],
+        )
+        assert (snapshot.robots[0].position.x, snapshot.robots[0].position.y) == (5, 6)
         assert 43190 <= await harness.raw_redis.ttl(harness.robot_command_store.position_key(harness.robot_id)) <= 43200
         commands, acks = harness.mqtt_probe.events("commands"), harness.mqtt_probe.events("acks")
         assert len(commands) == 1
