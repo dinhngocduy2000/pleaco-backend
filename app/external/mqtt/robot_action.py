@@ -119,6 +119,8 @@ class RobotActionMqttGateway:
             return
         # Do not let arbitrary external UUIDs create queues or channels.
         record = await self.robot_command_store.active(ack.robot_id)
+        if record is None and ack.ack:
+            record = await self.robot_command_store.unconfirmed_movement(ack.robot_id)
         if record is None or record["command_id"] != str(ack.command_id):
             return
         await self.robot_action_topic.publish_ack(ack)

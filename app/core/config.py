@@ -79,6 +79,8 @@ class Settings(BaseAppSettings):
     ROBOT_COMMANDS_PAUSED: bool = False
     # Enable admission after all robot-action consumers and reconcilers are upgraded.
     CLEANING_TASKS_ENABLED: bool = False
+    CLEANING_STEP_INTERVAL_SECONDS: PositiveFloat = 10
+    CLEANING_OCCUPANCY_RETRIES: PositiveInt = 5
     # Buffer non-traversable layout features by this many map meters.
     CLEANING_PATH_CLEARANCE_METERS: PositiveFloat = 1.0
 

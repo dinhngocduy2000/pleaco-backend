@@ -113,7 +113,7 @@ class CleaningPathService:
 
     async def plan_for_robot(
         self, *, map_id: UUID, robot_id: UUID, group_id: UUID, actor_id: UUID,
-        ctx: AppContext, offline_status_code: int = 400,
+        ctx: AppContext, offline_status_code: int = 400, for_execution: bool = False,
     ) -> PlannedCleaningPath:
         """Generate a scoped route and capture the position used as its start."""
         logger.info(msg=f"Preparing cleaning path for map {map_id}, robot {robot_id}", context=ctx)
@@ -134,7 +134,8 @@ class CleaningPathService:
             position_record = await self.positions.position(map_robot_id)
             position_records[map_robot_id] = position_record
             positions[map_robot_id] = self._resolve_position(
-                map_robot_id, position_record, docks.get(map_robot_id), map_id, group_id, cutoff, ctx
+                map_robot_id, position_record, docks.get(map_robot_id), map_id, group_id, cutoff, ctx,
+                for_execution=for_execution,
             )
         start = self._require_docked_start(positions[robot_id], own_dock, robot_id, ctx)
         exclusions = self._exclusions(snapshot, positions, robot_id, ctx)
@@ -306,8 +307,15 @@ class CleaningPathService:
         group_id: UUID,
         cutoff: datetime,
         ctx: AppContext,
+        *,
+        for_execution: bool,
     ) -> Point2D:
-        """Use a confirmed Redis point, or a dock centroid only when it is absent."""
+        """Use verified evidence for execution and allow an absent preview point at its dock."""
+        if for_execution and (
+            record is None or record.get("verified") is not True or record.get("robot_id") != str(robot_id)
+        ):
+            logger.warning(msg=f"Map robot {robot_id} has no verified position for execution", context=ctx)
+            raise BadRequestException(message="A map robot has no verified position", status_code=409)
         if record is None:
             if dock is None:
                 logger.warning(
@@ -340,7 +348,8 @@ class CleaningPathService:
             x, y = float(record["x"]), float(record["y"])
             fresh = (
                 updated.tzinfo is not None
-                and cutoff <= updated <= datetime.now(timezone.utc)
+                and updated <= datetime.now(timezone.utc)
+                and (record.get("verified") is True or cutoff <= updated)
                 and isfinite(x)
                 and isfinite(y)
             )
@@ -348,7 +357,7 @@ class CleaningPathService:
             fresh = False
         if not fresh:
             logger.warning(
-                msg=f"Map robot {robot_id} confirmed position is stale", context=ctx
+                msg=f"Map robot {robot_id} confirmed position is invalid or stale", context=ctx
             )
             raise BadRequestException(
                 message="A map robot has a stale confirmed position"

@@ -1,5 +1,6 @@
 """Thin Socket.IO connection and map-event adapters."""
 
+from contextlib import nullcontext
 from typing import Any
 from uuid import uuid4
 
@@ -102,21 +103,19 @@ class SocketIOHandler:
             )
             # A group recorded in a token may have become stale after issuance,
             # so membership is verified again before joining its automatic room.
-            if credential.active_group_id is not None:
-                await self._permission_service.get_group_member(
-                    credential=credential,
-                    group_id=credential.active_group_id,
-                    ctx=ctx,
-                )
-
-            await self._session_service.save(
-                sid, SocketSession(credential=credential)
-            )
-            await self._room_service.join(sid, Rooms.user(credential.id))
-            if credential.active_group_id is not None:
-                await self._room_service.join(
-                    sid, Rooms.group(credential.active_group_id)
-                )
+            group_id = credential.active_group_id
+            async with (
+                self._room_service.membership_lock(group_id, credential.id)
+                if group_id is not None else nullcontext()
+            ):
+                if group_id is not None:
+                    await self._permission_service.get_group_member(
+                        credential=credential, group_id=group_id, ctx=ctx,
+                    )
+                await self._session_service.save(sid, SocketSession(credential=credential))
+                await self._room_service.join(sid, Rooms.user(credential.id))
+                if group_id is not None:
+                    await self._room_service.join(sid, Rooms.group(group_id))
         except Exception as error:
             logger.warning(
                 msg="Rejected unauthorized Socket.IO connection", context=ctx

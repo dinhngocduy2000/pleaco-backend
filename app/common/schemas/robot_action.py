@@ -54,6 +54,8 @@ class RobotCommandRecord(TypedDict):
     deadline: str
     failure_reason: str | None
     loop: NotRequired[bool]
+    # Internal provenance. An ACK confirms a relative move from this origin.
+    origin_verified: NotRequired[bool]
     # Internal scheduling fields for commands owned by a cleaning task.
     task_id: NotRequired[str]
     not_before: NotRequired[str]
@@ -65,6 +67,8 @@ class RobotPositionRecord(RobotCoordinates):
     map_id: str
     command_id: str
     updated_at: str
+    # Only trusted position evidence can establish or extend verified provenance.
+    verified: NotRequired[bool]
 
 
 class RobotActionContext(TypedDict):

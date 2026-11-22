@@ -25,6 +25,7 @@ from app.external.mqtt.robot_status import RobotStatusMqttIngestion
 from app.external.realtime.handlers import SocketIOHandler, register_socketio_handlers
 from app.external.realtime.rooms import RoomService
 from app.external.realtime.robot_status import RobotStatusRealtimePublisher
+from app.external.realtime.robot_action import RobotActionRealtimePublisher
 from app.external.realtime.session import SocketSessionService
 from app.external.realtime.socket import create_socketio_app, socket_server
 from app.external.redis.redis import RedisClient
@@ -104,6 +105,7 @@ class App:
             robot_action_service = RobotActionService(
                 registry, permission_service, robot_command_store, robot_action_topic,
                 robot_action_mqtt_gateway, cleaning_path_repository=cleaning_path_repository,
+                realtime_publisher=RobotActionRealtimePublisher(room_service),
             )
             self.application.state.robot_action_mqtt_gateway = robot_action_mqtt_gateway
             bot_status_service = BotStatusService(
@@ -125,6 +127,7 @@ class App:
                 repo=registry,
                 permission_service=permission_service,
                 add_group_member_topic=add_group_member_topic,
+                room_service=room_service,
             )
             bot_service = BotService(
                 bot_repository=registry.bot_repo(),

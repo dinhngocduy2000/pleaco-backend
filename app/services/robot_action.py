@@ -1,7 +1,6 @@
 """Robot action lifecycle, authorization, and confirmed-position reconciliation."""
 
 import asyncio
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -10,7 +9,7 @@ from math import isfinite
 from typing import TypeGuard
 from uuid import UUID, uuid4
 
-from shapely.geometry import LineString, Point, shape
+from shapely.geometry import LineString, Point
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
@@ -32,14 +31,13 @@ from app.core.rbac.permissions import PermissionService
 from app.core.rbac.role_validation import require_permission
 from app.external.mqtt.robot_action import RobotActionMqttGateway
 from app.external.queues.topics.robot_action import RobotActionTopic
+from app.external.realtime.robot_action import RobotActionRealtimePublisher
 from app.external.redis.robot_commands import RobotCommandStore
 from app.repository.cleaning_path import CleaningPathRepository
 from app.repository.registry import DbAccessContext, Registry
 from app.services.cleaning_path import layout_signature
 
 logger = Logger()
-CLEANING_STEP_INTERVAL_SECONDS = 10
-CLEANING_OCCUPANCY_RETRIES = 5
 
 
 @dataclass(frozen=True)
@@ -63,6 +61,7 @@ class RobotActionService:
         *,
         clock: Callable[[], datetime] | None = None,
         cleaning_path_repository: CleaningPathRepository | None = None,
+        realtime_publisher: RobotActionRealtimePublisher | None = None,
     ) -> None:
         """Bind the dependencies and register the queued-message handler.
 
@@ -83,6 +82,7 @@ class RobotActionService:
         self.robot_action_mqtt_gateway = robot_action_mqtt_gateway
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.cleaning_path_repository = cleaning_path_repository
+        self.realtime_publisher = realtime_publisher
         self.robot_action_topic.set_handlers(self.process_command, self._process_movement_ack)
 
     def _command_deadline(self) -> str:
@@ -124,9 +124,20 @@ class RobotActionService:
         logger.debug(msg=f"Reserving cleaning task for robot {robot_id} with {len(moves)} moves", context=ctx)
         # Planning may take time, so check readiness again before reserving the robot.
         await self.ensure_cleaning_task_can_start(robot_id=robot_id, map_id=map_id, group_id=group_id, actor_id=actor_id, ctx=ctx)
+        if start_position is None or start_position.get("verified") is not True:
+            raise BadRequestException(message="Robot has no verified starting position", status_code=409)
+        position_matches_context = (
+            start_position.get("robot_id") == str(robot_id)
+            and start_position.get("group_id") == str(group_id)
+            and start_position.get("map_id") == str(map_id)
+        )
+        if not position_matches_context:
+            raise BadRequestException(message="Robot has no verified starting position", status_code=409)
         if not moves:
             logger.warning(msg=f"Cleaning route has no moves for robot {robot_id}", context=ctx)
             raise BadRequestException(message="Cleaning route has no moves")
+        if any(moves[0]["origin"][axis] != start_position[axis] for axis in ("x", "y")):
+            raise BadRequestException(message="Cleaning route start does not match the verified position", status_code=409)
         now = self.clock()
         task: CleaningTaskRecord = {
             "task_id": str(uuid4()), "robot_id": str(robot_id), "map_id": str(map_id),
@@ -140,10 +151,10 @@ class RobotActionService:
             task["trace_id"] = str(ctx.trace_id)
             if ctx.actor:
                 task["actor_id"] = str(ctx.actor)
-        command = self._build_cleaning_command(task, moves[0], now)
+        command = self._build_cleaning_command(task, moves[0], now, origin_verified=True)
         if not await self.robot_command_store.reserve_task(command, start_position, task, moves):
             logger.warning(msg=f"Cleaning task reservation failed for robot {robot_id}", context=ctx)
-            raise BadRequestException(message="Robot is busy or its position changed; retry the request", status_code=409)
+            raise BadRequestException(message="Robot is busy, its position changed, or its movement is unconfirmed", status_code=409)
         self._log_cleaning_task(task)
         try:
             await self.robot_action_topic.publish_command(to_robot_command(command))
@@ -159,7 +170,7 @@ class RobotActionService:
         return CleaningTaskInfo.model_validate(task) if task else None
 
     def _build_cleaning_command(
-        self, task: CleaningTaskRecord, move: CleaningMove, dispatch_at: datetime,
+        self, task: CleaningTaskRecord, move: CleaningMove, dispatch_at: datetime, *, origin_verified: bool,
     ) -> RobotCommandRecord:
         """Give a planned move its own command ID, dispatch window, and route flags."""
         action = CleaningAction(
@@ -171,6 +182,7 @@ class RobotActionService:
         now = self.clock().isoformat()
         return {
             **command.model_dump(mode="json"), "task_id": task["task_id"],
+            "origin_verified": origin_verified,
             "group_id": task["group_id"], "map_id": task["map_id"],
             "origin": move["origin"], "target": move["target"], "status": CommandStatus.QUEUED.value,
             "created_at": now, "updated_at": now, "failure_reason": None,
@@ -467,8 +479,13 @@ class RobotActionService:
         }
         if loop:
             record["loop"] = True
+        if (
+            position and position.get("verified") is True and position.get("robot_id") == str(robot_id)
+            and position.get("group_id") == str(group_id) and position.get("map_id") == str(context["map_id"])
+        ):
+            record["origin_verified"] = True
         if not await self.robot_command_store.reserve(record, position):
-            raise BadRequestException(message="Robot is busy or its position changed; retry the request", status_code=409)
+            raise BadRequestException(message="Robot is busy, its position changed, or its movement is unconfirmed", status_code=409)
         if no_movement:
             await self._finish_command(record, CommandStatus.FAILED, "No movement direction fits map dimensions")
             return self._command_info((await self.robot_command_store.get(robot_id, command.command_id)) or record)
@@ -585,7 +602,10 @@ class RobotActionService:
                     record, updated_record, task, status=CleaningTaskStatus(status.value), reason=reason,
                     terminal=True, position=position,
                 )
-        return await self.robot_command_store.transition(record, updated_record, terminal=True, position=position)
+        changed = await self.robot_command_store.transition(record, updated_record, terminal=True, position=position)
+        if changed and position is not None and self.realtime_publisher is not None:
+            await self.realtime_publisher.publish(position)
+        return changed
 
     async def _transition_cleaning_task(
         self, command: RobotCommandRecord, updated_command: RobotCommandRecord, task: CleaningTaskRecord, *,
@@ -613,6 +633,8 @@ class RobotActionService:
         )
         if changed:
             self._log_cleaning_task(updated_task)
+            if position is not None and self.realtime_publisher is not None:
+                await self.realtime_publisher.publish(position)
         else:
             logger.warning(
                 msg=f"Cleaning task {task['task_id']} transition to {status.value} was not applied",
@@ -663,13 +685,35 @@ class RobotActionService:
 
     async def _process_movement_ack(self, message: RobotAcknowledgement) -> None:
         command = await self._validate_active_command(message)
-        if command is not None and command.get("task_id"):
+        if command is None:
+            if message.ack:
+                await self._reconcile_late_position(message)
+            return
+        if command.get("task_id"):
             await self._process_cleaning_ack(message, command)
             return
-        if command is not None and command.get("loop"):
+        if command.get("loop"):
             await self._process_loop_ack(message, command)
             return
         await self.process_ack(message, retry_enabled=True, on_success_ack=self._confirmed_position)
+
+    async def _reconcile_late_position(self, message: RobotAcknowledgement) -> None:
+        """Accept exact execution evidence for a previously verified movement."""
+        movement = await self.robot_command_store.unconfirmed_movement(message.robot_id)
+        if (
+            movement is None or movement.get("origin_verified") is not True
+            or any(movement.get(field) != value for field, value in message.model_dump(mode="json", exclude={"ack"}).items())
+        ):
+            return
+        context = await self._get_robot_context(message.robot_id)
+        if context is None or (
+            str(context["group_id"]) != movement["group_id"] or str(context["map_id"]) != movement["map_id"]
+        ):
+            return
+        position = self._confirmed_position(movement)
+        if await self.robot_command_store.confirm_unconfirmed_movement(movement, position):
+            if self.realtime_publisher is not None:
+                await self.realtime_publisher.publish(position)
 
     async def _process_cleaning_ack(self, message: RobotAcknowledgement, command: RobotCommandRecord) -> None:
         """Confirm a move and either schedule its successor or finish the task."""
@@ -698,9 +742,10 @@ class RobotActionService:
         if next_move is None:
             await self._finish_command(command, CommandStatus.FAILED, "Cleaning route state unavailable", position=position)
             return
-        next_dispatch_at = self.clock() + timedelta(seconds=CLEANING_STEP_INTERVAL_SECONDS)
+        next_dispatch_at = self.clock() + timedelta(seconds=settings.CLEANING_STEP_INTERVAL_SECONDS)
         next_command = self._build_cleaning_command(
             {**task, "completed_moves": completed_moves}, next_move, next_dispatch_at,
+            origin_verified=position.get("verified") is True,
         )
         changed = await self._transition_cleaning_task(
             command, completed_command, task, status=CleaningTaskStatus.WAITING_INTERVAL,
@@ -747,6 +792,8 @@ class RobotActionService:
             "updated_at": self.clock().isoformat(), "deadline": self._command_deadline(),
         }
         if await self.robot_command_store.transition(command, next_command, position=position):
+            if self.realtime_publisher is not None:
+                await self.realtime_publisher.publish(position)
             try:
                 await self._publish_loop_command(to_robot_command(next_command))
             except Exception:
@@ -841,11 +888,6 @@ class RobotActionService:
         segment = self._movement_segment(command)
         clearance = settings.CLEANING_PATH_CLEARANCE_METERS
         expected_peer_values: dict[str, str | None] = {}
-        peer_docks = {
-            str(robot_id): geometry
-            for robot_id, geometry in layout.get("docks", [])
-            if robot_id is not None
-        }
         for robot in layout["robots"]:
             robot_id = str(robot.id)
             if robot_id == command["robot_id"] or str(robot.group_id) != command["group_id"] or str(robot.map_id) != command["map_id"]:
@@ -853,6 +895,18 @@ class RobotActionService:
             peer = await self.robot_command_store.peer_state(robot.id)
             expected_peer_values.update(peer.guard)
             peer_command = peer.command
+            unconfirmed = peer.unconfirmed_movement
+            if peer.unconfirmed_movement_invalid or (
+                unconfirmed is not None and (
+                    unconfirmed.get("origin_verified") is not True
+                    or not self._shares_map(command, unconfirmed)
+                    or unconfirmed.get("robot_id") != robot_id
+                    or not self._valid_map_point(unconfirmed.get("origin"), layout)
+                    or not self._valid_map_point(unconfirmed.get("target"), layout)
+                    or segment.distance(self._movement_segment(unconfirmed)) <= clearance
+                )
+            ):
+                return True, expected_peer_values
             if confirmed_peers is None and not peer.cleaning_task_active:
                 continue
             if peer.position_invalid or peer.command_invalid:
@@ -868,17 +922,16 @@ class RobotActionService:
             position = peer.position
             point: RobotCoordinates | None
             if position is not None:
-                if not self._shares_map(command, position) or position.get("robot_id") != robot_id:
+                if (
+                    not self._shares_map(command, position) or position.get("robot_id") != robot_id
+                    or (confirmed_peers is not None and position.get("verified") is not True)
+                ):
                     return True, expected_peer_values
                 if confirmed_peers is not None:
                     confirmed_peers.add(robot_id)
                 point = position
             elif confirmed_peers is None and peer_command is not None and self._shares_map(command, peer_command):
                 point = peer_command.get("origin")
-            elif confirmed_peers is not None and robot_id not in confirmed_peers and robot_id in peer_docks:
-                # A peer that previously had a confirmed position cannot fall back to its dock.
-                center = shape(json.loads(peer_docks[robot_id])).centroid
-                point = {"x": center.x, "y": center.y}
             else:
                 return True, expected_peer_values
             if not self._valid_map_point(point, layout) or segment.distance(Point(point["x"], point["y"])) <= clearance:
@@ -889,6 +942,9 @@ class RobotActionService:
         """Load the task and keep the map locked through validation and publication."""
         awaiting_ack = command["status"] == CommandStatus.AWAITING_ACK.value
         if awaiting_ack and await self.robot_command_store.dispatched(command):
+            return
+        if command.get("origin_verified") is not True:
+            await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning movement has no verified origin")
             return
         if settings.ROBOT_COMMANDS_PAUSED:
             if not awaiting_ack:
@@ -939,10 +995,20 @@ class RobotActionService:
             if command["status"] != CommandStatus.AWAITING_ACK.value:
                 await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning route invalidated by map changes")
             return
+        position = await self.robot_command_store.position(command["robot_id"])
+        if (
+            position is None or position.get("verified") is not True
+            or position.get("robot_id") != command["robot_id"]
+            or not self._shares_map(command, position)
+            or any(position.get(axis) != command["origin"][axis] for axis in ("x", "y"))
+        ):
+            await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning movement no longer has a verified origin")
+            return
         confirmed_peers = set(task.get("confirmed_peer_ids", []))
         blocked, expected_peer_values = await self._check_movement_occupancy(
             command, layout, confirmed_peers=confirmed_peers,
         )
+        expected_peer_values[RobotCommandStore.position_key(command["robot_id"])] = RobotCommandStore.encode(position)
         is_occupancy_retry = task["status"] == CleaningTaskStatus.WAITING_OCCUPANCY.value
         occupancy_retries_used = task["occupancy_retries_used"] + int(is_occupancy_retry)
         if blocked:
@@ -971,14 +1037,14 @@ class RobotActionService:
     ) -> None:
         """Schedule another occupancy check or fail the task when retries run out."""
         now = self.clock()
-        if occupancy_retries_used >= CLEANING_OCCUPANCY_RETRIES:
-            reason = "Next movement blocked after five occupancy retries"
+        if occupancy_retries_used >= settings.CLEANING_OCCUPANCY_RETRIES:
+            reason = f"Next movement blocked after {settings.CLEANING_OCCUPANCY_RETRIES} occupancy retries"
             await self._transition_cleaning_task(
                 command, {**command, "status": CommandStatus.FAILED.value, "updated_at": now.isoformat(), "failure_reason": reason},
                 task, status=CleaningTaskStatus.FAILED, reason=reason, terminal=True, guard=expected_peer_values, retries=occupancy_retries_used,
             )
             return
-        next_check_at = now + timedelta(seconds=CLEANING_STEP_INTERVAL_SECONDS)
+        next_check_at = now + timedelta(seconds=settings.CLEANING_STEP_INTERVAL_SECONDS)
         deferred_command: RobotCommandRecord = {
             **command,
             "not_before": next_check_at.isoformat(),
@@ -992,7 +1058,7 @@ class RobotActionService:
 
     def _confirmed_position(self, command: RobotCommandRecord) -> RobotPositionRecord:
         """Build confirmed coordinates for an eligible movement ACK."""
-        return {
+        position: RobotPositionRecord = {
             "robot_id": command["robot_id"],
             "group_id": command["group_id"],
             "map_id": command["map_id"],
@@ -1000,6 +1066,9 @@ class RobotActionService:
             "command_id": command["command_id"],
             "updated_at": self.clock().isoformat(),
         }
+        if command.get("origin_verified") is True:
+            position["verified"] = True
+        return position
 
     async def reconcile_robot(self, robot_id: UUID) -> None:
         """Expire, cancel, or recover the active command for one robot.

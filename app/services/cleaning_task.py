@@ -25,7 +25,6 @@ logger = Logger()
 
 def _build_cardinal_move(origin: Point2D, target: Point2D, ctx: AppContext | None = None) -> CleaningMove:
     """Convert a route segment to a direction and an exact decimal distance."""
-    logger.debug(msg="Compiling cardinal cleaning movement", context=ctx)
     delta_x = Decimal(str(target[0])) - Decimal(str(origin[0]))
     delta_y = Decimal(str(target[1])) - Decimal(str(origin[1]))
     # Snap the stationary axis to the origin to absorb planner rounding noise.
@@ -154,6 +153,7 @@ class CleaningTaskService:
             actor_id=credential.id,
             ctx=ctx,
             offline_status_code=409,
+            for_execution=True,
         )
         try:
             moves = build_cleaning_moves(path, ctx)

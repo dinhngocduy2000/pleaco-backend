@@ -24,6 +24,8 @@ class RobotPeerState:
     position_invalid: bool = False
     command_invalid: bool = False
     cleaning_task_active: bool = False
+    unconfirmed_movement: RobotCommandRecord | None = None
+    unconfirmed_movement_invalid: bool = False
 
 
 _CHECK_PEER_STATE = """
@@ -37,6 +39,17 @@ local function peer_state_matches(first_key, first_arg)
         if actual ~= expected then return false end
     end
     return true
+end
+"""
+
+_UPDATE_MOVEMENT_RESERVATION = """
+local function update_movement_reservation(key, operation, command)
+    if operation == 'save' then
+        -- A command deadline is not evidence that movement has ended.
+        redis.call('SET', key, command)
+    elseif operation == 'clear' then
+        redis.call('DEL', key)
+    end
 end
 """
 
@@ -60,6 +73,10 @@ class RobotCommandStore:
     @staticmethod
     def position_key(robot_id: UUID | str) -> str:
         return f"robot:{robot_id}:position"
+
+    @staticmethod
+    def movement_reservation_key(robot_id: UUID | str) -> str:
+        return f"robot:{robot_id}:unconfirmed_movement"
 
     @staticmethod
     def task_key(task_id: UUID | str) -> str:
@@ -124,6 +141,27 @@ class RobotCommandStore:
         saved_position = await self.redis_client.get(self.position_key(robot_id))
         return cast(RobotPositionRecord, json.loads(saved_position)) if saved_position else None
 
+    async def unconfirmed_movement(self, robot_id: UUID | str) -> RobotCommandRecord | None:
+        saved_movement = await self.redis_client.get(self.movement_reservation_key(robot_id))
+        return cast("RobotCommandRecord | None", self._peer_record(saved_movement))
+
+    async def confirm_unconfirmed_movement(
+        self, command: RobotCommandRecord, position: RobotPositionRecord,
+    ) -> bool:
+        """Reconcile a late execution ACK without changing terminal command or task state."""
+        robot_id = command["robot_id"]
+        return bool(await self.redis_client.eval(
+            """
+            if redis.call('EXISTS', KEYS[1], KEYS[2]) ~= 0 then return 0 end
+            if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
+            redis.call('SET', KEYS[4], ARGV[2], 'EX', ARGV[3])
+            redis.call('DEL', KEYS[3])
+            return 1
+            """, 4, self.active_key(robot_id), self.active_task_key(robot_id),
+            self.movement_reservation_key(robot_id), self.position_key(robot_id),
+            self.encode(command), self.encode(position), self.ttl,
+        ))
+
     async def get_task(self, task_id: UUID | str) -> CleaningTaskRecord | None:
         """Read progress for an active or retained terminal task."""
         saved_task = await self.redis_client.get(self.task_key(task_id))
@@ -155,9 +193,9 @@ class RobotCommandStore:
         active_key = self.active_key(robot_id)
         position_key = self.position_key(robot_id)
         task_index = self.active_task_key(robot_id)
-        peer_keys = [active_key, position_key, task_index]
+        peer_keys = [active_key, position_key, task_index, self.movement_reservation_key(robot_id)]
         peer_values = await self.redis_client.mget(peer_keys)
-        command_id, saved_position, task_id = peer_values
+        command_id, saved_position, task_id, saved_movement = peer_values
         expected_peer_values = dict(zip(peer_keys, peer_values, strict=True))
         saved_command = None
         if command_id:
@@ -166,12 +204,27 @@ class RobotCommandStore:
             expected_peer_values[key] = saved_command
         position = cast("RobotPositionRecord | None", self._peer_record(saved_position))
         command = cast("RobotCommandRecord | None", self._peer_record(saved_command))
+        movement = cast("RobotCommandRecord | None", self._peer_record(saved_movement))
         return RobotPeerState(
             position=position, command=command, guard=expected_peer_values,
             position_invalid=saved_position is not None and position is None,
             command_invalid=(command_id is not None or task_id is not None) and command is None,
             cleaning_task_active=task_id is not None or bool(command and command.get("task_id")),
+            unconfirmed_movement=movement,
+            unconfirmed_movement_invalid=saved_movement is not None and movement is None,
         )
+
+    @staticmethod
+    def _movement_reservation_update(current: RobotCommandRecord, updated: RobotCommandRecord) -> tuple[str, str]:
+        """Carry occupancy across timeout, cancellation, and uncertain publish failures."""
+        if updated["status"] == "AWAITING_ACK":
+            return "save", RobotCommandStore.encode(updated)
+        if current["status"] == "AWAITING_ACK":
+            if updated["status"] in {"TIMED_OUT", "CANCELLED"}:
+                return "save", RobotCommandStore.encode(current)
+            if updated["status"] != "QUEUED" or updated["attempt"] != current["attempt"]:
+                return "clear", ""
+        return "keep", ""
 
     async def reserve(self, command: RobotCommandRecord, position: RobotPositionRecord | None) -> bool:
         return await self._reserve(command, position)
@@ -188,11 +241,11 @@ class RobotCommandStore:
         task: CleaningTaskRecord | None = None, moves: list[CleaningMove] | None = None,
     ) -> bool:
         reserve_script = """
-        if redis.call('EXISTS', KEYS[1], KEYS[4]) ~= 0 then return 0 end
+        if redis.call('EXISTS', KEYS[1], KEYS[4], KEYS[5]) ~= 0 then return 0 end
         local position = redis.call('GET', KEYS[3]) or ''
         if position ~= ARGV[3] then return 0 end
-        if #KEYS == 6 then
-            if redis.call('EXISTS', KEYS[5], KEYS[6]) ~= 0 then return 0 end
+        if #KEYS == 7 then
+            if redis.call('EXISTS', KEYS[6], KEYS[7]) ~= 0 then return 0 end
             local moves = cjson.decode(ARGV[7])
             if #moves == 0 then return 0 end
             -- Keep each HSET call within Lua's argument limit while storing the whole route atomically.
@@ -202,11 +255,11 @@ class RobotCommandStore:
                     entries[#entries + 1] = tostring(index - 1)
                     entries[#entries + 1] = moves[index]
                 end
-                redis.call('HSET', KEYS[6], unpack(entries))
+                redis.call('HSET', KEYS[7], unpack(entries))
             end
-            redis.call('EXPIRE', KEYS[6], ARGV[4])
+            redis.call('EXPIRE', KEYS[7], ARGV[4])
             redis.call('SET', KEYS[4], ARGV[5], 'EX', ARGV[4])
-            redis.call('SET', KEYS[5], ARGV[6], 'EX', ARGV[4])
+            redis.call('SET', KEYS[6], ARGV[6], 'EX', ARGV[4])
         end
         redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[4])
         redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[4])
@@ -217,6 +270,7 @@ class RobotCommandStore:
             self.command_key(command["robot_id"], command["command_id"]),
             self.position_key(command["robot_id"]),
             self.active_task_key(command["robot_id"]),
+            self.movement_reservation_key(command["robot_id"]),
         ]
         task_values = []
         if task is not None and moves is not None:
@@ -235,10 +289,10 @@ class RobotCommandStore:
         guard: dict[str, str | None] | None = None,
     ) -> bool:
         """Compare and replace the active command, optionally verifying peer state."""
-        transition_script = _CHECK_PEER_STATE + """
+        transition_script = _CHECK_PEER_STATE + _UPDATE_MOVEMENT_RESERVATION + """
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
-        if not peer_state_matches(6, 10) then return 0 end
+        if not peer_state_matches(7, 12) then return 0 end
         if ARGV[7] == '1' then
             local now = redis.call('TIME')
             if tonumber(now[1]) + tonumber(now[2]) / 1000000 >= tonumber(ARGV[8]) then return 0 end
@@ -255,6 +309,7 @@ class RobotCommandStore:
         if ARGV[6] ~= '' then
             redis.call('SET', KEYS[3], ARGV[6], 'EX', ARGV[4])
         end
+        update_movement_reservation(KEYS[6], ARGV[10], ARGV[11])
         return 1
         """
         guard = guard or {}
@@ -265,14 +320,15 @@ class RobotCommandStore:
             or (bool(task_id) and position is not None)
         )
         return bool(await self.redis_client.eval(
-            transition_script, 5 + len(guard), self.active_key(robot_id),
+            transition_script, 6 + len(guard), self.active_key(robot_id),
             self.command_key(robot_id, current_command["command_id"]),
             self.position_key(robot_id), self.active_task_key(robot_id),
-            self.task_moves_key(task_id), *guard, current_command["command_id"],
+            self.task_moves_key(task_id), self.movement_reservation_key(robot_id), *guard, current_command["command_id"],
             self.encode(current_command), self.encode(updated_command), self.ttl, int(terminal),
             self.encode(position) if position is not None else "",
             int(checks_deadline),
             datetime.fromisoformat(current_command["deadline"]).timestamp(), task_id,
+            *self._movement_reservation_update(current_command, updated_command),
             *("v" + value if value is not None else "" for value in guard.values()),
         ))
 
@@ -283,7 +339,7 @@ class RobotCommandStore:
         next_command: RobotCommandRecord | None = None, guard: dict[str, str | None] | None = None,
     ) -> bool:
         """Commit task and command progress together, retaining one active pointer."""
-        transition_script = _CHECK_PEER_STATE + """
+        transition_script = _CHECK_PEER_STATE + _UPDATE_MOVEMENT_RESERVATION + """
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
         if redis.call('GET', KEYS[4]) ~= ARGV[7] then return 0 end
@@ -292,7 +348,7 @@ class RobotCommandStore:
         if ARGV[9] ~= '' and redis.call('EXISTS', KEYS[6]) == 1 then return 0 end
         local indexed_task = redis.call('GET', KEYS[7])
         if indexed_task and indexed_task ~= ARGV[14] then return 0 end
-        if not peer_state_matches(8, 15) then return 0 end
+        if not peer_state_matches(9, 17) then return 0 end
 
         local time = redis.call('TIME')
         -- Recheck the dispatch window at the same instant as the state change.
@@ -318,6 +374,7 @@ class RobotCommandStore:
         if ARGV[6] ~= '' then
             redis.call('SET', KEYS[3], ARGV[6], 'EX', ARGV[4])
         end
+        update_movement_reservation(KEYS[8], ARGV[15], ARGV[16])
         return 1
         """
         checks_occupancy = guard is not None
@@ -335,11 +392,11 @@ class RobotCommandStore:
         )
         checks_deadline = position is not None or updated_command["status"] in {"QUEUED", "AWAITING_ACK", "SUCCEEDED"}
         return bool(await self.redis_client.eval(
-            transition_script, 7 + len(guard),
+            transition_script, 8 + len(guard),
             self.active_key(robot_id), command_key, self.position_key(robot_id),
             self.task_key(task_id), self.task_moves_key(task_id),
             self.command_key(robot_id, next_command_id) if next_command is not None else command_key,
-            self.active_task_key(robot_id), *guard,
+            self.active_task_key(robot_id), self.movement_reservation_key(robot_id), *guard,
             current_command["command_id"], self.encode(current_command), self.encode(updated_command),
             self.ttl, int(terminal), self.encode(position) if position is not None else "",
             self.encode(current_task), self.encode(updated_task), next_command_id,
@@ -347,6 +404,7 @@ class RobotCommandStore:
             int(checks_deadline),
             datetime.fromisoformat(current_command["deadline"]).timestamp(),
             datetime.fromisoformat(not_before).timestamp() if not_before else "", task_id,
+            *self._movement_reservation_update(current_command, updated_command),
             *("v" + value if value is not None else "" for value in guard.values()),
         ))
 

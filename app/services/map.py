@@ -570,13 +570,13 @@ class MapService:
         for (robot_id, name, dock_x, dock_y, dock_updated_at), value in zip(robots, values, strict=True):
             position = None
             if value is None and dock_x is not None and dock_y is not None and dock_updated_at is not None:
-                position = MapRobotPosition(x=dock_x, y=dock_y, updated_at=dock_updated_at)
+                position = MapRobotPosition(x=dock_x, y=dock_y, updated_at=dock_updated_at, source="dock")
             if value is not None:
                 try:
                     record = RobotPosition.model_validate(json.loads(value))
                     if record.robot_id != robot_id or record.group_id != group_id or record.map_id != map_id or not isfinite(record.x) or not isfinite(record.y):
                         raise ValueError("Position identity or coordinates invalid")
-                    position = MapRobotPosition(x=record.x, y=record.y, updated_at=record.updated_at)
+                    position = MapRobotPosition(x=record.x, y=record.y, updated_at=record.updated_at, source="confirmed")
                 except (ValueError, TypeError):
                     logger.warning(msg=f"Invalid position record for robot {robot_id}", context=ctx)
             result.append(MapPositionRobot(id=robot_id, name=name, position=position))
