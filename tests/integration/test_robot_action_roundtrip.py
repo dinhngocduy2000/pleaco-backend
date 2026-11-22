@@ -35,6 +35,7 @@ from redis.asyncio import Redis
 
 from app.common.context import AppContext
 from app.common.enum.context_actions import SEND_ROBOT_COMMAND
+from app.common.exceptions import BadRequestException
 from app.common.enum.map import MapBoundarySource
 from app.common.enum.robot import RobotConnectionStatus, RobotOperationalStatus
 from app.common.enum.user_roles import GroupRole
@@ -56,7 +57,6 @@ from app.repository.registry import DbAccessContext
 from app.router.cleaning_task import CleaningTaskRouter
 from app.services.cleaning_path import CleaningPathService
 from app.services.cleaning_task import CleaningTaskService
-from app.services import robot_action
 from app.services.robot_action import RobotActionService
 
 
@@ -271,7 +271,7 @@ async def test_cleaning_task_http_roundtrip(
 ) -> None:
     interval = 0.15
     monkeypatch.setattr(settings, "CLEANING_TASKS_ENABLED", True)
-    monkeypatch.setattr(robot_action, "CLEANING_STEP_INTERVAL_SECONDS", interval)
+    monkeypatch.setattr(settings, "CLEANING_STEP_INTERVAL_SECONDS", interval)
     monkeypatch.setattr(settings, "CLEANING_PATH_CLEARANCE_METERS", 0.1)
     harness.context.update(dimension_x=Decimal("3"), dimension_y=Decimal("3"), dock_x=0.5, dock_y=0.5)
     dock = {"type": "Polygon", "coordinates": [[[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6], [0.4, 0.4]]]}
@@ -309,6 +309,16 @@ async def test_cleaning_task_http_roundtrip(
         id=harness.auth["credential"].id, email="cleaning@example.com", status=UserStatus.ACTIVE,
         active_group_id=harness.group_id,
     )
+    verified_dock = {
+        "robot_id": str(harness.robot_id), "group_id": str(harness.group_id), "map_id": str(harness.map_id),
+        "x": 0.5, "y": 0.5, "verified": True, "command_id": str(uuid4()),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await harness.raw_redis.set(
+        harness.robot_command_store.position_key(harness.robot_id),
+        harness.robot_command_store.encode(verified_dock),
+        ex=harness.robot_command_store.ttl,
+    )
     path_sections = await path_service.preview(
         map_id=harness.map_id, robot_id=harness.robot_id, group_id=harness.group_id,
         credential=credential, ctx=harness.auth["ctx"],
@@ -340,6 +350,7 @@ async def test_cleaning_task_http_roundtrip(
         blocker = {
             "robot_id": str(peer_id), "group_id": str(harness.group_id), "map_id": str(harness.map_id),
             "x": expected_waypoints[1][0], "y": expected_waypoints[1][1],
+            "verified": True,
             "command_id": str(uuid4()), "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         for index, point in enumerate(expected_waypoints):
@@ -556,36 +567,54 @@ async def test_backend_restart_recovers_only_unconfirmed_dispatch(harness: Simpl
 
 
 @pytest.mark.asyncio
-async def test_timeout_never_resends_and_allows_fresh_trigger(harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_timeout_blocks_replacement_until_verified_late_ack(harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "ROBOT_COMMAND_TIMEOUT_SECONDS", 1)
+    store = harness.robot_command_store
+    verified_origin = {
+        "robot_id": str(harness.robot_id), "group_id": str(harness.group_id), "map_id": str(harness.map_id),
+        "x": 5, "y": 5, "verified": True, "command_id": str(uuid4()),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await harness.raw_redis.set(store.position_key(harness.robot_id), store.encode(verified_origin), ex=store.ttl)
     command = await harness.robot_action_service.submit(request=request(), **harness.auth)
     await command_status(harness, command.command_id, "AWAITING_ACK")
     await asyncio.sleep(1.1)
     await harness.robot_action_service.reconcile_robot(harness.robot_id)
     await command_status(harness, command.command_id, "TIMED_OUT")
     assert len(harness.mqtt_probe.events("commands")) == 1
-    assert await harness.robot_command_store.position(harness.robot_id) is None
-    fresh = await harness.robot_action_service.submit(request=request(), **harness.auth)
-    assert fresh.command_id != command.command_id
-    await command_status(harness, fresh.command_id, "AWAITING_ACK")
+    assert await store.position(harness.robot_id) == verified_origin
+    with pytest.raises(BadRequestException) as rejection:
+        await harness.robot_action_service.submit(request=request(), **harness.auth)
+    assert rejection.value.status_code == 409
     ack = RobotAcknowledgement(**{
         key: command.model_dump(mode="json")[key] for key in RobotCommand.model_fields
     }, ack=True)
-    await harness.robot_action_topic.publish_ack(ack)
-    await asyncio.sleep(0.1)
-    assert await harness.robot_command_store.position(harness.robot_id) is None
-    assert (await harness.robot_command_store.active(harness.robot_id))["command_id"] == str(fresh.command_id)
+    published = harness.mqtt_probe.client.publish(
+        f"pleco/robots/{harness.robot_id}/acks", ack.model_dump_json(), qos=1,
+    )
+    await asyncio.to_thread(published.wait_for_publish, timeout=3)
+    deadline = asyncio.get_running_loop().time() + 5
+    while await store.unconfirmed_movement(harness.robot_id) is not None:
+        assert asyncio.get_running_loop().time() < deadline, "Late ACK did not reconcile the position"
+        await asyncio.sleep(0.02)
+    position = await store.position(harness.robot_id)
+    assert (position["x"], position["y"], position["verified"]) == (5, 6, True)
+    assert (await store.get(harness.robot_id, command.command_id))["status"] == "TIMED_OUT"
+    fresh = await harness.robot_action_service.submit(request=request(), **harness.auth)
+    assert fresh.command_id != command.command_id
 
 
 @pytest.mark.asyncio
-async def test_evicted_command_record_releases_only_its_dangling_reservation(harness: SimpleNamespace) -> None:
+async def test_evicted_command_record_keeps_unconfirmed_movement_reserved(harness: SimpleNamespace) -> None:
     command = await harness.robot_action_service.submit(request=request(), **harness.auth)
     await command_status(harness, command.command_id, "AWAITING_ACK")
     await harness.raw_redis.delete(harness.robot_command_store.command_key(harness.robot_id, command.command_id))
     assert await harness.robot_command_store.active(harness.robot_id) is None
     assert await harness.raw_redis.get(harness.robot_command_store.active_key(harness.robot_id)) is None
-    fresh = await harness.robot_action_service.submit(request=request(), **harness.auth)
-    assert fresh.command_id != command.command_id
+    assert (await harness.robot_command_store.unconfirmed_movement(harness.robot_id))["command_id"] == str(command.command_id)
+    with pytest.raises(BadRequestException) as rejection:
+        await harness.robot_action_service.submit(request=request(), **harness.auth)
+    assert rejection.value.status_code == 409
 
 
 def test_backend_and_simulator_accept_identical_command_contracts() -> None:

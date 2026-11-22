@@ -138,6 +138,49 @@ async def test_evicted_active_command_fails_retained_task(store):
             await store.redis_client.delete(key)
 
 
+async def test_timeout_keeps_occupancy_until_matching_position_is_confirmed(store):
+    task, command, moves = build_task_records()
+    robot_id = command["robot_id"]
+    command["origin_verified"] = True
+    awaiting = {**command, "status": "AWAITING_ACK"}
+    awaiting_task = {**task, "status": "AWAITING_ACK"}
+    timed_out = {**command, "status": "TIMED_OUT"}
+    timed_out_task = {**task, "status": "TIMED_OUT"}
+    position = {
+        **{key: command[key] for key in ("robot_id", "group_id", "map_id", "command_id", "updated_at")},
+        **command["target"], "verified": True,
+    }
+    movement_key = store.movement_reservation_key(robot_id)
+    active_key = store.active_key(robot_id)
+    try:
+        assert await store.reserve_task(command, None, task, moves)
+        assert await store.transition_task(command, awaiting, task, awaiting_task)
+        assert await store.transition_task(awaiting, timed_out, awaiting_task, timed_out_task, terminal=True)
+        peer = await store.peer_state(robot_id)
+        assert peer.command is None
+        assert peer.unconfirmed_movement == awaiting
+        assert movement_key in peer.guard
+        assert not await store.reserve(command, None)
+        assert not await store.confirm_unconfirmed_movement({**awaiting, "attempt": 2}, position)
+
+        await store.redis_client.set(active_key, str(uuid4()), expire=60)
+        assert not await store.confirm_unconfirmed_movement(awaiting, position)
+        await store.redis_client.delete(active_key)
+        assert await store.confirm_unconfirmed_movement(awaiting, position)
+        assert not await store.confirm_unconfirmed_movement(awaiting, position)
+        assert (await store.get_task(task["task_id"]))["status"] == "TIMED_OUT"
+        assert await store.position(robot_id) == position
+        assert (await store.peer_state(robot_id)).unconfirmed_movement is None
+    finally:
+        for key in (
+            active_key,
+            store.active_task_key(robot_id), store.command_key(robot_id, command["command_id"]),
+            store.task_key(task["task_id"]), store.task_moves_key(task["task_id"]),
+            store.position_key(robot_id), movement_key,
+        ):
+            await store.redis_client.delete(key)
+
+
 async def test_expired_task_cannot_write_confirmed_position(store):
     task, command, moves = build_task_records()
     robot_id = command["robot_id"]

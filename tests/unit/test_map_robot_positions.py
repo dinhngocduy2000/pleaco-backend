@@ -24,7 +24,7 @@ async def test_missing_position_uses_assigned_dock_centroid():
     result = await MapService.get_robot_positions.__wrapped__(
         MapService(repo, None, redis_client=redis), map_id, group,
         SimpleNamespace(id=uuid4(), active_group_id=group), SimpleNamespace())
-    assert result.robots[0].position.model_dump() == {'x': 1.5, 'y': 2.5, 'updated_at': updated}
+    assert result.robots[0].position.model_dump() == {'x': 1.5, 'y': 2.5, 'updated_at': updated, 'source': 'dock'}
     assert result.robots[1].position is None
     assert result.robots[2].position is None
 
@@ -44,6 +44,7 @@ async def test_positions_validate_identity_and_keep_unknown():
     service = MapService(repo, None, redis_client=redis)
     result = await MapService.get_robot_positions.__wrapped__(service, map_id, group, SimpleNamespace(id=uuid4(), active_group_id=group), SimpleNamespace())
     assert result.robots[0].position.x == 1
+    assert result.robots[0].position.source == "confirmed"
     assert result.robots[1].position is None
     redis.mget.assert_awaited_once()
 

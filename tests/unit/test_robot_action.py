@@ -32,6 +32,7 @@ from app.common.schemas.cleaning_task import CleaningTaskStatus
 from app.common.utils.robot_actions import to_robot_command
 from app.core.config import settings
 from app.core.rbac.permissions import PermissionService
+from app.external.redis.robot_commands import RobotPeerState
 from app.handler.robot_action import RobotActionHandler
 from app.router.robot_action import RobotActionRouter
 from app.services.robot_action import RobotActionService
@@ -58,6 +59,9 @@ class MemoryStore:
 
     async def position(self, robot_id: UUID | str) -> RobotPositionRecord | None:
         return deepcopy(self.positions.get(str(robot_id)))
+
+    async def unconfirmed_movement(self, robot_id: UUID | str) -> RobotCommandRecord | None:
+        return None
 
     async def dispatched(self, record: RobotCommandRecord) -> bool:
         return (record["command_id"], record["attempt"]) in self.dispatches
@@ -159,8 +163,7 @@ class InMemoryCleaningCommandStore(MemoryStore):
         return self.moves[task_id][index]
 
     async def peer_state(self, robot_id):
-        return SimpleNamespace(position=self.peers.get(robot_id), command=None, guard={},
-                               position_invalid=False, command_invalid=False, cleaning_task_active=False)
+        return RobotPeerState(position=self.peers.get(robot_id), command=None, guard={})
 
     async def transition_task(
         self, previous, updated, task, updated_task, *,
@@ -199,6 +202,7 @@ async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on
     def set_peer(x, y) -> None:
         store.peers[peer_id] = {
             "robot_id": str(peer_id), "group_id": str(group_id), "map_id": str(map_id), "x": x, "y": y,
+            "verified": True,
         }
 
     def advance(seconds) -> None:
@@ -216,9 +220,13 @@ async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on
     set_peer(9, 9)
     start = {"x": 4.0, "y": 4.0}
     turn = {"x": 5.0, "y": 4.0}
+    start_position = store.positions[str(robot_id)] = {
+        **start, "robot_id": str(robot_id), "group_id": str(group_id), "map_id": str(map_id),
+        "verified": True, "command_id": str(uuid4()), "updated_at": s.now[0].isoformat(),
+    }
     task = await service.start_cleaning_task(
         robot_id=robot_id, map_id=map_id, group_id=group_id, actor_id=s.kwargs["credential"].id,
-        layout_signature=layout_signature(layout), start_position=None,
+        layout_signature=layout_signature(layout), start_position=start_position,
         ctx=s.kwargs["ctx"],
         moves=[
             {"origin": start, "target": turn, "distance": "1m", "direction": Direction.EAST},
@@ -282,8 +290,8 @@ async def test_cleaning_admission_requires_rollout_opt_in(monkeypatch) -> None:
     s.robot_action_topic.publish_command.assert_not_awaited()
 
 
-@pytest.mark.parametrize("peer_status", ["QUEUED", "AWAITING_ACK"])
-async def test_ordinary_move_yields_to_active_cleaning_robot(peer_status, monkeypatch) -> None:
+@pytest.mark.parametrize("peer_status", ["QUEUED", "AWAITING_ACK", "TIMED_OUT"])
+async def test_ordinary_move_yields_to_active_or_unconfirmed_cleaning_robot(peer_status, monkeypatch) -> None:
     monkeypatch.setattr(settings, "CLEANING_PATH_CLEARANCE_METERS", 0.1)
     s = setup()
     service = s.robot_action_service
@@ -297,9 +305,11 @@ async def test_ordinary_move_yields_to_active_cleaning_robot(peer_status, monkey
     }
     service.cleaning_path_repository = SimpleNamespace(motion_layout=AsyncMock(return_value=layout))
     store = service.robot_command_store
-    store.peer_state = AsyncMock(return_value=SimpleNamespace(
-        position={**peer, **peer_origin}, command=peer, guard={},
-        position_invalid=False, command_invalid=False, cleaning_task_active=True,
+    timed_out = peer_status == "TIMED_OUT"
+    store.peer_state = AsyncMock(return_value=RobotPeerState(
+        position={**peer, **peer_origin}, command=None if timed_out else peer, guard={},
+        cleaning_task_active=not timed_out,
+        unconfirmed_movement={**peer, "origin_verified": True} if timed_out else None,
     ))
     await submit(s)
     command = await store.active(robot_id)
@@ -310,6 +320,7 @@ async def test_ordinary_move_yields_to_active_cleaning_robot(peer_status, monkey
 @pytest.mark.asyncio
 async def test_four_action_loop_commits_each_step_and_finishes_only_on_fourth() -> None:
     s = setup()
+    s.robot_action_service.realtime_publisher = SimpleNamespace(publish=AsyncMock())
     info = await s.robot_action_service.submit_loop(
         request=RobotLoopRequest(direction="NORTH"), **s.kwargs,
     )
@@ -331,6 +342,7 @@ async def test_four_action_loop_commits_each_step_and_finishes_only_on_fourth() 
         assert updated["status"] == ("SUCCEEDED" if attempt == 4 else "QUEUED")
     assert await s.robot_command_store.active(info.robot_id) is None
     assert s.robot_action_topic.publish_command.await_count == 4
+    assert s.robot_action_service.realtime_publisher.publish.await_count == 4
 
 
 @pytest.mark.asyncio
@@ -465,6 +477,7 @@ def test_contract_defaults_alias_and_strict_fields() -> None:
 @pytest.mark.parametrize("direction,target", [("NORTH", (4, 4.5)), ("SOUTH", (4, 3.5)), ("EAST", (4.5, 4)), ("WEST", (3.5, 4))])
 async def test_success_directions_and_duplicate_ack(direction: str, target: tuple[float, float]) -> None:
     s = setup()
+    s.robot_action_service.realtime_publisher = SimpleNamespace(publish=AsyncMock())
     payload = request(distance="0.5m")
     payload.action.direction = Direction(direction)
     info = await submit(s, payload)
@@ -474,6 +487,7 @@ async def test_success_directions_and_duplicate_ack(direction: str, target: tupl
     assert s.robot_action_mqtt_gateway.publish_command.await_count == 1
     await asyncio.gather(s.robot_action_service.process_message(ack(command)), s.robot_action_service.process_message(ack(command)))
     position = await s.robot_command_store.position(command.robot_id)
+    s.robot_action_service.realtime_publisher.publish.assert_awaited_once_with(position)
     assert (position["x"], position["y"]) == target
     assert (await s.robot_command_store.get(command.robot_id, command.command_id))["status"] == "SUCCEEDED"
     assert await s.robot_command_store.active(command.robot_id) is None
@@ -596,6 +610,38 @@ async def test_wrong_attempt_or_action_ack_cannot_move_position() -> None:
     altered["distance"] = "2m"
     await s.robot_action_service.process_message(ack(command, action=altered))
     assert await s.robot_command_store.position(info.robot_id) is None
+
+
+async def test_late_ack_reconciles_only_exact_verified_movement_in_the_same_map() -> None:
+    s = setup()
+    store = s.robot_command_store
+    service = s.robot_action_service
+    info = await submit(s)
+    command = envelope(info)
+    await service.process_message(command)
+    movement = {**await store.active(info.robot_id), "origin_verified": True}
+    s.now[0] += timedelta(seconds=61)
+    await service.reconcile_robot(info.robot_id)
+    store.unconfirmed_movement = AsyncMock(return_value={**movement, "origin_verified": False})
+    store.confirm_unconfirmed_movement = AsyncMock(return_value=True)
+    service.realtime_publisher = SimpleNamespace(publish=AsyncMock())
+    await service.process_message(ack(command))
+
+    store.unconfirmed_movement.return_value = movement
+    await service.process_message(ack(command, attempt=2))
+    s.context["map_id"] = uuid4()
+    await service.process_message(ack(command))
+    store.confirm_unconfirmed_movement.assert_not_awaited()
+
+    s.context["map_id"] = UUID(movement["map_id"])
+    await service.process_message(ack(command))
+    store.confirm_unconfirmed_movement.assert_awaited_once()
+    saved_movement, saved_position = store.confirm_unconfirmed_movement.call_args.args
+    assert saved_movement == movement
+    assert saved_position["verified"] is True
+    assert {axis: saved_position[axis] for axis in ("x", "y")} == movement["target"]
+    service.realtime_publisher.publish.assert_awaited_once_with(saved_position)
+    assert (await store.get(info.robot_id, info.command_id))["status"] == "TIMED_OUT"
 
 
 @pytest.mark.asyncio

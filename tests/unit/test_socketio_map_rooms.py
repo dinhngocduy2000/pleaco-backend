@@ -188,6 +188,40 @@ async def test_emitting_to_group_and_map_delivers_once_per_socket(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_group_member_eviction_removes_map_receivers_only_for_that_membership(monkeypatch) -> None:
+    server = socketio.AsyncServer(async_mode="asgi")
+    rooms = RoomService(server)
+    group_id, other_group_id, user_id = uuid4(), uuid4(), uuid4()
+    target_map, other_map = Rooms.map(uuid4()), Rooms.map(uuid4())
+    removed = await server.manager.connect("removed", "/")
+    entitled = await server.manager.connect("entitled", "/")
+    other_group = await server.manager.connect("other-group", "/")
+    await rooms.join(removed, Rooms.user(user_id))
+    await rooms.join(removed, Rooms.group(group_id))
+    await rooms.join(removed, target_map)
+    await rooms.join(entitled, Rooms.user(uuid4()))
+    await rooms.join(entitled, Rooms.group(group_id))
+    await rooms.join(entitled, target_map)
+    await rooms.join(other_group, Rooms.user(user_id))
+    await rooms.join(other_group, Rooms.group(other_group_id))
+    await rooms.join(other_group, other_map)
+
+    packets = []
+
+    async def capture_packet(eio_sid, _packet):
+        packets.append(eio_sid)
+
+    monkeypatch.setattr(server, "_send_packet", capture_packet)
+    monkeypatch.setattr(server, "_send_eio_packet", capture_packet)
+    await rooms.disconnect_group_member(group_id, user_id)
+    assert packets == ["removed"]
+    packets.clear()
+    await rooms.emit("map.robot.position", {}, target_map)
+    await rooms.emit("map.robot.position", {}, other_map)
+    assert packets == ["entitled", "other-group"]
+
+
+@pytest.mark.asyncio
 async def test_room_service_hides_transport_errors() -> None:
     server = FakeSocketServer()
     server.fail_room_operations = True

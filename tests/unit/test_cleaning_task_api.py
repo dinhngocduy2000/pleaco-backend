@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -94,6 +94,7 @@ async def test_http_start_and_status_authorize_and_scope_tasks(caplog):
         assert dispatcher.start_cleaning_task.call_args.kwargs["moves"] == build_cleaning_moves(_path())
         assert dispatcher.start_cleaning_task.call_args.kwargs["confirmed_peer_ids"] == []
         assert planner.plan_for_robot.call_args.kwargs["offline_status_code"] == 409
+        assert planner.plan_for_robot.call_args.kwargs["for_execution"] is True
         request_context = planner.plan_for_robot.call_args.kwargs["ctx"]
         assert dispatcher.start_cleaning_task.call_args.kwargs["ctx"] is request_context
         assert any(
@@ -156,3 +157,27 @@ async def test_planning_retains_the_source_record_for_the_start_reservation():
     moves = build_cleaning_moves(path)
     assert {"x": 5, "y": 5} in [move["target"] for move in moves]
     assert moves[0]["origin"] == moves[-1]["target"] == {"x": 1.25, "y": 1.25}
+
+    execution_args = dict(
+        map_id=map_id, robot_id=robot_id, group_id=group_id, actor_id=actor_id, ctx=None,
+        for_execution=True,
+    )
+    for unverified_position in (None, source_record):
+        position_records[robot_id] = unverified_position
+        with pytest.raises(BadRequestException, match="no verified position"):
+            await service.plan_for_robot(**execution_args)
+
+    old_position_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    position_records[robot_id] = {**source_record, "verified": True, "updated_at": old_position_time}
+    position_records[peer_id] = {**peer_record, "verified": True, "updated_at": old_position_time}
+    with pytest.raises(BadRequestException, match="no verified position"):
+        await service.plan_for_robot(**execution_args)
+    position_records[docked_peer_id] = {
+        **source_record, "verified": True, "updated_at": old_position_time,
+        "robot_id": str(docked_peer_id), "x": 9.5, "y": 0.5,
+    }
+    execution_path = await service.plan_for_robot(**execution_args)
+    assert execution_path.start == path.start
+    assert execution_path.start_position is position_records[robot_id]
+    idle_preview = await service.plan_for_robot(**{**execution_args, "for_execution": False})
+    assert idle_preview.start == execution_path.start
