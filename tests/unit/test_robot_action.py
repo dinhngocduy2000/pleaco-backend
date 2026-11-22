@@ -87,7 +87,9 @@ class MemoryStore:
         self.records[command_id] = deepcopy(updated)
         if terminal:
             self.active_ids.pop(robot_id)
-        if position is not None:
+        if terminal and previous.get("task_id") and updated["status"] in {"FAILED", "CANCELLED", "TIMED_OUT"}:
+            self.positions.pop(robot_id, None)
+        elif position is not None:
             self.positions[robot_id] = deepcopy(position)
         return True
 
@@ -282,7 +284,7 @@ async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on
         assert updated.status == CleaningTaskStatus.FAILED
         assert "blocked" in updated.terminal_reason
         assert s.robot_action_mqtt_gateway.publish_command.await_count == 1
-        assert (await store.position(robot_id))["x"] == turn["x"]
+        assert await store.position(robot_id) is None
     assert await store.active(robot_id) is None
 
 

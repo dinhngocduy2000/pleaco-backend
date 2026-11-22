@@ -595,7 +595,8 @@ class RobotActionService:
         Returns:
             bool: True if the transition was applied; False if the expected
             reservation, record, or applicable deadline check no longer matches.
-            An omitted position leaves the existing position and its TTL intact.
+            Interrupted cleaning tasks clear their cached position. Other
+            transitions without a position preserve the existing cache entry.
         """
         updated_record: RobotCommandRecord = {**record, "status": status.value, "updated_at": self.clock().isoformat(), "failure_reason": reason}
         if task_id := record.get("task_id"):
@@ -606,7 +607,10 @@ class RobotActionService:
                     terminal=True, position=position,
                 )
         changed = await self.robot_command_store.transition(record, updated_record, terminal=True, position=position)
-        if changed and position is not None and self.realtime_publisher is not None:
+        if (
+            changed and position is not None and self.realtime_publisher is not None
+            and (not record.get("task_id") or status == CommandStatus.SUCCEEDED)
+        ):
             await self.realtime_publisher.publish(position)
         return changed
 
@@ -636,7 +640,10 @@ class RobotActionService:
         )
         if changed:
             self._log_cleaning_task(updated_task)
-            if position is not None and self.realtime_publisher is not None:
+            if (
+                position is not None and self.realtime_publisher is not None
+                and (not terminal or status == CleaningTaskStatus.SUCCEEDED)
+            ):
                 await self.realtime_publisher.publish(position)
         else:
             logger.warning(

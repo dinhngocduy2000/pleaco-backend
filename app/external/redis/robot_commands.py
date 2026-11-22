@@ -106,7 +106,7 @@ class RobotCommandStore:
         return active_command
 
     async def _release_dangling_reservation(self, robot_id: UUID | str, command_id: str | None) -> None:
-        """Fail retained tasks whose active commands were evicted."""
+        """Fail tasks with evicted commands and clear their cached positions."""
         task_index = self.active_task_key(robot_id)
         task_id = await self.redis_client.get(task_index)
         if not (command_id or task_id):
@@ -130,11 +130,12 @@ class RobotCommandStore:
                         redis.call('SET', KEYS[4], cjson.encode(task), 'EX', ARGV[3])
                     end
                 end
-                redis.call('DEL', KEYS[5])
+                redis.call('DEL', KEYS[5], KEYS[6])
             end
             return 1
-        """, 5, self.active_key(robot_id), self.command_key(robot_id, command_id or ""),
+        """, 6, self.active_key(robot_id), self.command_key(robot_id, command_id or ""),
             task_index, self.task_key(task_id or ""), self.task_moves_key(task_id or ""),
+            self.position_key(robot_id),
             command_id or "", task_id or "", self.ttl)
 
     async def position(self, robot_id: UUID | str) -> RobotPositionRecord | None:
@@ -306,7 +307,13 @@ class RobotCommandStore:
         else
             redis.call('EXPIRE', KEYS[1], ARGV[4])
         end
-        if ARGV[6] ~= '' then
+        -- Interrupted cleaning commands discard their position in the same CAS.
+        local updated = cjson.decode(ARGV[3])
+        local interrupted = ARGV[5] == '1' and ARGV[9] ~= ''
+            and (updated.status == 'FAILED' or updated.status == 'CANCELLED' or updated.status == 'TIMED_OUT')
+        if interrupted then
+            redis.call('DEL', KEYS[3])
+        elseif ARGV[6] ~= '' then
             redis.call('SET', KEYS[3], ARGV[6], 'EX', ARGV[4])
         end
         update_movement_reservation(KEYS[6], ARGV[10], ARGV[11])
@@ -338,7 +345,7 @@ class RobotCommandStore:
         terminal: bool = False, position: RobotPositionRecord | None = None,
         next_command: RobotCommandRecord | None = None, guard: dict[str, str | None] | None = None,
     ) -> bool:
-        """Commit task and command progress together, retaining one active pointer."""
+        """Commit task progress atomically and clear positions on interruption."""
         transition_script = _CHECK_PEER_STATE + _UPDATE_MOVEMENT_RESERVATION + """
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
@@ -371,7 +378,13 @@ class RobotCommandStore:
                 redis.call('SET', KEYS[1], ARGV[9], 'EX', ARGV[4])
             end
         end
-        if ARGV[6] ~= '' then
+        -- A failed task invalidates its cached position, including an ACK supplied with failure.
+        local updated_task = cjson.decode(ARGV[8])
+        local interrupted = ARGV[5] == '1'
+            and (updated_task.status == 'FAILED' or updated_task.status == 'CANCELLED' or updated_task.status == 'TIMED_OUT')
+        if interrupted then
+            redis.call('DEL', KEYS[3])
+        elseif ARGV[6] ~= '' then
             redis.call('SET', KEYS[3], ARGV[6], 'EX', ARGV[4])
         end
         update_movement_reservation(KEYS[8], ARGV[15], ARGV[16])

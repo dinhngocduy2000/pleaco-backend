@@ -14,6 +14,7 @@ from app.common.exceptions import (
     NotFoundException,
 )
 from app.common.middleware.logger import Logger
+from app.common.schemas.cleaning_task import CleaningTaskStatus
 from app.common.schemas.geometry import PolygonGeometry
 from app.common.schemas.map import (
     MapRobotPositions, MapPositionRobot, MapRobotPosition,
@@ -562,12 +563,40 @@ class MapService:
         try:
             if self.redis_client is None:
                 raise RuntimeError("Redis is not configured")
-            values = await self.redis_client.mget([RobotCommandStore.position_key(robot[0]) for robot in robots])
+            robot_ids = [robot[0] for robot in robots]
+            values = await self.redis_client.mget([
+                *(RobotCommandStore.position_key(robot_id) for robot_id in robot_ids),
+                *(RobotCommandStore.active_task_key(robot_id) for robot_id in robot_ids),
+            ])
+            positions, task_ids = values[:len(robot_ids)], values[len(robot_ids):]
+            active_tasks = [(robot_id, task_id) for robot_id, task_id in zip(robot_ids, task_ids, strict=True) if task_id]
+            task_values = await self.redis_client.mget([
+                RobotCommandStore.task_key(task_id) for _, task_id in active_tasks
+            ]) if active_tasks else []
         except Exception as error:
             logger.error(msg=f"Failed to read robot positions: {error}", context=ctx)
             raise BadRequestException(message="Robot positions unavailable", status_code=503) from error
+        cleaning_robots = set()
+        for (robot_id, task_id), value in zip(active_tasks, task_values, strict=True):
+            if not value:
+                continue
+            try:
+                task = json.loads(value)
+            except ValueError:
+                continue
+            if isinstance(task, dict) and (
+                task.get("task_id") == task_id
+                and task.get("robot_id") == str(robot_id)
+                and task.get("map_id") == str(map_id)
+                and task.get("group_id") == str(group_id)
+                and task.get("status") in (
+                    CleaningTaskStatus.QUEUED, CleaningTaskStatus.AWAITING_ACK,
+                    CleaningTaskStatus.WAITING_INTERVAL, CleaningTaskStatus.WAITING_OCCUPANCY,
+                )
+            ):
+                cleaning_robots.add(robot_id)
         result = []
-        for (robot_id, name, dock_x, dock_y, dock_updated_at), value in zip(robots, values, strict=True):
+        for (robot_id, name, dock_x, dock_y, dock_updated_at), value in zip(robots, positions, strict=True):
             position = None
             if value is None and dock_x is not None and dock_y is not None and dock_updated_at is not None:
                 position = MapRobotPosition(x=dock_x, y=dock_y, updated_at=dock_updated_at, source="dock")
@@ -579,7 +608,9 @@ class MapService:
                     position = MapRobotPosition(x=record.x, y=record.y, updated_at=record.updated_at, source="confirmed")
                 except (ValueError, TypeError):
                     logger.warning(msg=f"Invalid position record for robot {robot_id}", context=ctx)
-            result.append(MapPositionRobot(id=robot_id, name=name, position=position))
+            result.append(MapPositionRobot(
+                id=robot_id, name=name, position=position, cleaning_task_active=robot_id in cleaning_robots,
+            ))
         return MapRobotPositions(robots=result)
 
     @require_permission(GroupRole.GUEST)

@@ -327,6 +327,7 @@ class MapPositionRobot(BaseModel):
     id: UUID
     name: str
     position: MapRobotPosition | None
+    cleaning_task_active: bool = False
 
 
 class MapRobotPositions(BaseModel):

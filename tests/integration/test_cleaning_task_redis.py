@@ -107,7 +107,8 @@ async def test_task_transition_cas_commits_progress_and_successor(store):
         assert await store.active(robot_id) is None
         assert await store.get_task(task["task_id"]) == failed
         assert not await store.has_task_moves(task["task_id"])
-        assert await store.reserve(command, position)
+        assert await store.position(robot_id) is None
+        assert await store.reserve(command, None)
     finally:
         for key in (
             position_key, store.active_key(robot_id), store.active_task_key(robot_id),
@@ -124,8 +125,10 @@ async def test_evicted_active_command_fails_retained_task(store):
     robot_id = command["robot_id"]
     assert await store.reserve_task(command, None, task, moves)
     try:
+        await store.redis_client.set(store.position_key(robot_id), store.encode(command["origin"]), expire=60)
         await store.redis_client.delete(store.command_key(robot_id, command["command_id"]))
         assert await store.active(robot_id) is None
+        assert await store.position(robot_id) is None
         assert (await store.get_task(task["task_id"]))["status"] == "FAILED"
         assert not await store.has_task_moves(task["task_id"])
         assert await store.reserve(command, None)
@@ -178,6 +181,43 @@ async def test_timeout_keeps_occupancy_until_matching_position_is_confirmed(stor
             store.task_key(task["task_id"]), store.task_moves_key(task["task_id"]),
             store.position_key(robot_id), movement_key,
         ):
+            await store.redis_client.delete(key)
+
+
+@pytest.mark.parametrize("status", ["FAILED", "CANCELLED", "TIMED_OUT"])
+@pytest.mark.parametrize("task_present", [True, False])
+async def test_interrupted_task_atomically_clears_only_its_robot_position(store, status, task_present):
+    task, command, moves = build_task_records()
+    robot_id = command["robot_id"]
+    position_key = store.position_key(robot_id)
+    peer_key = store.position_key(uuid4())
+    position = {**command["target"], "updated_at": command["updated_at"]}
+    keys = [position_key, peer_key, store.active_key(robot_id), store.active_task_key(robot_id),
+            store.command_key(robot_id, command["command_id"]), store.task_key(task["task_id"]),
+            store.task_moves_key(task["task_id"]), store.movement_reservation_key(robot_id)]
+    try:
+        assert await store.reserve_task(command, None, task, moves)
+        await store.redis_client.set(position_key, store.encode(position), expire=60)
+        await store.redis_client.set(peer_key, store.encode(position), expire=60)
+        updated = {**command, "status": status}
+        if task_present:
+            async def interrupt():
+                return await store.transition_task(
+                    command, updated, task, {**task, "status": status}, terminal=True, position=position,
+                )
+        else:
+            await store.redis_client.delete(store.task_key(task["task_id"]))
+            async def interrupt():
+                return await store.transition(command, updated, terminal=True, position=position)
+        assert await interrupt()
+        assert await store.position(robot_id) is None
+        assert await store.redis_client.get(peer_key) == store.encode(position)
+        # A redelivered terminal transition cannot erase a newer saved position.
+        await store.redis_client.set(position_key, store.encode(position), expire=60)
+        assert not await interrupt()
+        assert await store.position(robot_id) == position
+    finally:
+        for key in keys:
             await store.redis_client.delete(key)
 
 

@@ -20,7 +20,7 @@ async def test_missing_position_uses_assigned_dock_centroid():
     async def transaction(callback, context):
         return await callback(None)
     repo = SimpleNamespace(map_repo=lambda: repository, transaction_wrapper=transaction)
-    redis = SimpleNamespace(mget=AsyncMock(return_value=[None, None, 'invalid']))
+    redis = SimpleNamespace(mget=AsyncMock(return_value=[None, None, 'invalid', None, None, None]))
     result = await MapService.get_robot_positions.__wrapped__(
         MapService(repo, None, redis_client=redis), map_id, group,
         SimpleNamespace(id=uuid4(), active_group_id=group), SimpleNamespace())
@@ -40,13 +40,35 @@ async def test_positions_validate_identity_and_keep_unknown():
     repo.transaction_wrapper = transaction
     valid = dict(robot_id=str(robot), group_id=str(group), map_id=str(map_id), command_id=str(uuid4()), x=1, y=2, updated_at='2026-01-01T00:00:00Z')
     invalid = dict(valid, robot_id=str(robot))
-    redis = SimpleNamespace(mget=AsyncMock(return_value=[json.dumps(valid), json.dumps(invalid)]))
+    redis = SimpleNamespace(mget=AsyncMock(return_value=[json.dumps(valid), json.dumps(invalid), None, None]))
     service = MapService(repo, None, redis_client=redis)
     result = await MapService.get_robot_positions.__wrapped__(service, map_id, group, SimpleNamespace(id=uuid4(), active_group_id=group), SimpleNamespace())
     assert result.robots[0].position.x == 1
     assert result.robots[0].position.source == "confirmed"
     assert result.robots[1].position is None
     redis.mget.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "same_map", "active"), [
+    ("QUEUED", True, True), ("AWAITING_ACK", True, True), ("WAITING_INTERVAL", True, True),
+    ("WAITING_OCCUPANCY", True, True), ("FAILED", True, False), ("SUCCEEDED", True, False),
+    ("QUEUED", False, False),
+])
+async def test_map_positions_include_only_scoped_active_cleaning_tasks(status, same_map, active):
+    group, map_id, robot, task_id = (uuid4() for _ in range(4))
+    docked = [(robot, "Cleaner", 1.5, 2.5, datetime(2026, 1, 1, tzinfo=timezone.utc))]
+    repo = SimpleNamespace(transaction_wrapper=AsyncMock(return_value=docked))
+    task = json.dumps({
+        "task_id": str(task_id), "group_id": str(group), "robot_id": str(robot),
+        "map_id": str(map_id if same_map else uuid4()), "status": status,
+    })
+    redis = SimpleNamespace(mget=AsyncMock(side_effect=[[None, str(task_id)], [task]]))
+    result = await MapService.get_robot_positions.__wrapped__(
+        MapService(repo, None, redis_client=redis), map_id, group,
+        SimpleNamespace(id=uuid4(), active_group_id=group), SimpleNamespace(),
+    )
+    assert result.robots[0].cleaning_task_active is active
 
 
 @pytest.mark.asyncio
