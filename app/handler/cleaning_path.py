@@ -39,7 +39,7 @@ class CleaningPathHandler:
                 credential=credential, ctx=ctx,
             )
         except Exception:
-            logger.error(msg="Cleaning path preview request failed", context=ctx)
+            logger.exception(msg="Cleaning path preview request failed", context=ctx)
             raise
         # 3. Put variable ring count inside a fixed API object while preserving
         # ring order and each section's coordinate order.

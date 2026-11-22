@@ -15,6 +15,7 @@ from app.common.context import AppContext
 from app.common.enum.direction import Direction
 from app.common.middleware.logger import Logger
 from app.common.utils.robot_movement import RectangleBoundary, select_movement
+from app.core.config import settings
 
 logger = Logger()
 
@@ -74,11 +75,13 @@ def _points_are_close(a: Point2D, b: Point2D) -> bool:
 
 
 def _steps(a: Point2D, b: Point2D) -> list[Point2D]:
-    """Split one segment into points no farther than one meter apart."""
+    """Split a segment into steps within the configured distance."""
     length = math.dist(a, b)
-    count = max(1, math.ceil(length - EPSILON))
-    if count > MAX_POINTS:
+    steps_required = max(0.0, length - EPSILON) / settings.CLEANING_STEP_DISTANCE_METERS
+    # Reject oversized segments before rounding the count or allocating waypoints.
+    if steps_required > MAX_POINTS:
         raise PlanningError("Cleaning path exceeds maximum response size")
+    count = max(1, math.ceil(steps_required))
     return [
         (a[0] + (b[0] - a[0]) * i / count, a[1] + (b[1] - a[1]) * i / count)
         for i in range(1, count + 1)
@@ -124,7 +127,7 @@ def _cardinal_steps(
     width: float,
     height: float,
 ) -> list[Point2D]:
-    """Validate the prescribed cardinal movement at each meter step."""
+    """Validate the prescribed cardinal movement at each step."""
     if abs(target[0] - origin[0]) > EPSILON:
         direction = Direction.WEST if target[0] < origin[0] else Direction.EAST
     else:
@@ -154,9 +157,13 @@ def _cardinal_steps(
 
 
 def _ring_points(
-    width: float, height: float, start: Point2D
+    width: float,
+    height: float,
+    start: Point2D,
+    ctx: AppContext | None = None,
 ) -> tuple[list[Point2D], list[int]]:
     """Build ordered perimeter waypoints and mark each ring's final index."""
+    logger.debug(msg="Generating cleaning ring waypoints", context=ctx)
     # 1. The dock position is the first ring point; keep its starting side.
     side, offset = _starting_side(width, height, start)
     points: list[Point2D] = [start]
@@ -182,6 +189,7 @@ def _ring_points(
     center = (width / 2, height / 2)
     if not _points_are_close(points[-1], center):
         points.extend(_steps(points[-1], center))
+    logger.debug(msg=f"Generated {len(layer_ends)} cleaning ring layers", context=ctx)
     return points, layer_ends
 
 
@@ -197,11 +205,14 @@ class _Graph:
         anchors: list[Point2D],
         *,
         ingress: bool = False,
+        ctx: AppContext | None = None,
     ) -> None:
+        self.ctx = ctx
         self.boundary = InsetRectangle(width, height, 0 if ingress else clearance)
         self.obstacles = obstacles
         self.xs, self.ys = self._grid_axes(width, height, clearance, obstacles, anchors)
         if len(self.xs) * len(self.ys) > MAX_NODES:
+            logger.warning(msg="Cleaning layout exceeds graph node limit", context=ctx)
             raise PlanningError("Cleaning layout exceeds planning work limit")
         self.nx, self.ny = len(self.xs), len(self.ys)
         self.xindex = {x: i for i, x in enumerate(self.xs)}
@@ -250,7 +261,7 @@ class _Graph:
         goal: tuple[int, int],
         previous: dict[tuple[int, int], tuple[int, int]],
     ) -> list[Point2D]:
-        """Expand the chosen grid edges into points at most one meter apart."""
+        """Expand the chosen grid edges into steps within the configured distance."""
         nodes = [goal]
         while nodes[-1] != source:
             nodes.append(previous[nodes[-1]])
@@ -258,6 +269,9 @@ class _Graph:
         result: list[Point2D] = []
         for u, v in zip(nodes, nodes[1:]):
             result.extend(_steps(self._point(u), self._point(v)))
+            # Individually valid edges can still exceed the budget when combined.
+            if len(result) > MAX_POINTS:
+                raise PlanningError("Cleaning path exceeds maximum response size")
         return result
 
     def safe(self, a: Point2D, b: Point2D) -> bool:
@@ -267,6 +281,7 @@ class _Graph:
 
     def route(self, start: Point2D, end: Point2D) -> list[Point2D]:
         """Return a direct safe segment or a bounded A* orthogonal detour."""
+        logger.debug(msg="Finding a safe cleaning route segment", context=self.ctx)
         if _points_are_close(start, end):
             return []
         # 2. Prefer the prescribed line when its full segment is traversable.
@@ -288,6 +303,10 @@ class _Graph:
                 break
             self.work += 1
             if self.work > MAX_NODES:
+                logger.warning(
+                    msg="Cleaning path exceeds graph search work limit",
+                    context=self.ctx,
+                )
                 raise PlanningError("Cleaning path exceeds planning work limit")
             for nxt in self._neighbors(node):
                 a, b = self._point(node), self._point(nxt)
@@ -301,8 +320,11 @@ class _Graph:
                         queue, (candidate + math.dist(b, end), candidate, nxt)
                     )
         if goal not in costs:
+            logger.warning(
+                msg="Cleaning path cannot reach a required waypoint", context=self.ctx
+            )
             raise PlanningError("Cannot reach required ring, center, or dock")
-        # 4. Reconstruct the found route and split its edges into meter steps.
+        # 4. Reconstruct the route and split its edges into movement steps.
         return self._reconstruct(source, goal, previous)
 
 
@@ -331,7 +353,11 @@ class _RouteSections:
 
 
 def _validate_request(
-    width: float, height: float, start: Point2D, clearance: float
+    width: float,
+    height: float,
+    start: Point2D,
+    clearance: float,
+    ctx: AppContext | None = None,
 ) -> None:
     """Reject maps that cannot support a bounded rectangular preview."""
     if (
@@ -339,12 +365,20 @@ def _validate_request(
         or clearance <= 0
         or min(width, height) <= 2 * clearance
     ):
+        logger.warning(
+            msg="Map dimensions or clearance cannot support a cleaning ring",
+            context=ctx,
+        )
         raise PlanningError(
             "Map dimensions or clearance cannot support a cleaning ring"
         )
     if width * height > MAX_POINTS / 4:
+        logger.warning(msg="Cleaning layout exceeds planning work limit", context=ctx)
         raise PlanningError("Cleaning layout exceeds planning work limit")
     if not box(0, 0, width, height).covers(Point(start)):
+        logger.warning(
+            msg="Robot start position is outside map boundaries", context=ctx
+        )
         raise PlanningError("Robot position is outside map boundaries")
 
 
@@ -358,8 +392,15 @@ def plan_cleaning_path(
     ctx: AppContext | None = None,
 ) -> dict[str, list[Point2D]]:
     """Return ordered ring sections beginning at the robot's dock position."""
+    logger.debug(
+        msg=f"Validating cleaning path request with {len(exclusions)} exclusions",
+        context=ctx,
+    )
     # 1. Reject invalid or excessive maps before allocating rings or graph nodes.
-    _validate_request(width, height, start, clearance)
+    _validate_request(width, height, start, clearance, ctx)
+    logger.debug(
+        msg="Validated cleaning path dimensions and start position", context=ctx
+    )
     # 2. Buffer all exclusions by clearance. The robot's own dock is excluded
     # during ring travel but permitted while departing and returning.
     obstacles = unary_union(
@@ -373,11 +414,20 @@ def plan_cleaning_path(
     )
     # 3. Build ring waypoints from the exact robot position, then create a
     # full-map graph for dock travel and a dock-avoiding graph for the rings.
-    rings, layer_ends = _ring_points(width, height, start)
+    rings, layer_ends = _ring_points(width, height, start, ctx)
+    logger.debug(
+        msg=f"Generated {len(layer_ends)} cleaning rings with {len(rings)} waypoints",
+        context=ctx,
+    )
     first_offset = min(start[0], width - start[0], start[1], height - start[1])
     anchors = [start, *rings]
-    transit = _Graph(width, height, clearance, obstacles, anchors, ingress=True)
-    ring_graph = _Graph(width, height, first_offset, ring_obstacles, anchors)
+    transit = _Graph(
+        width, height, clearance, obstacles, anchors, ingress=True, ctx=ctx
+    )
+    ring_graph = _Graph(width, height, first_offset, ring_obstacles, anchors, ctx=ctx)
+    logger.debug(
+        msg="Built cleaning path graphs for dock travel and ring travel", context=ctx
+    )
     # 4. Start the first response layer at the robot position. Each later
     # section repeats its predecessor's last point to make sections standalone.
     route = _RouteSections(start)

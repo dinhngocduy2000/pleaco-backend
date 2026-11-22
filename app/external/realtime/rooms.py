@@ -1,6 +1,8 @@
 """Generic Socket.IO room naming and transport operations."""
 
+from asyncio import Lock
 from uuid import UUID
+from weakref import WeakValueDictionary
 
 import socketio
 
@@ -56,8 +58,8 @@ class Rooms:
 class RoomService:
     """Provide generic room operations over the shared Socket.IO server.
 
-    This transport adapter deliberately contains no map, group, or permission
-    rules. Callers must authorize a dynamic subscription before invoking it.
+    Callers authorize subscriptions and membership changes. The adapter
+    coordinates local room operations for those memberships.
     """
 
     def __init__(self, server: socketio.AsyncServer) -> None:
@@ -67,6 +69,27 @@ class RoomService:
             server: Process-wide asynchronous Socket.IO server.
         """
         self._server = server
+        self._membership_locks: WeakValueDictionary[tuple[UUID, UUID], Lock] = WeakValueDictionary()
+
+    def membership_lock(self, group_id: UUID, user_id: UUID) -> Lock:
+        """Serialize authorization and removal for one membership in this process."""
+        key = group_id, user_id
+        lock = self._membership_locks.get(key)
+        if lock is None:
+            lock = Lock()
+            self._membership_locks[key] = lock
+        return lock
+
+    async def disconnect_group_member(self, group_id: UUID, user_id: UUID) -> None:
+        """Disconnect the member's sockets in this group, clearing their map rooms."""
+        try:
+            participants = self._server.manager.get_participants
+            user_sids = {sid for sid, _ in participants("/", Rooms.user(user_id))}
+            group_sids = {sid for sid, _ in participants("/", Rooms.group(group_id))}
+            for sid in user_sids & group_sids:
+                await self._server.disconnect(sid, namespace="/")
+        except Exception as error:
+            raise RoomOperationError from error
 
     async def join(self, sid: str, room: str) -> None:
         """Add one connected socket to a room in the default namespace.

@@ -317,6 +317,8 @@ def test_router_declares_map_list_contract() -> None:
         list_maps=lambda: None,
         save_layout=lambda: None,
         get_map_detail=lambda: None,
+        get_robot_positions=lambda: None,
+        assign_docking_station_robot=lambda: None,
     )
     router = MapRouter(handler).router
     routes = {

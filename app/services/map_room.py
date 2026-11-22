@@ -69,19 +69,20 @@ class MapRoomService:
         if group_id is None:
             raise MapRoomAccessError("GROUP_REQUIRED")
 
-        try:
-            await self._map_service.ensure_realtime_access(
-                map_id=map_id,
-                group_id=group_id,
-                credential=credential,
-                ctx=ctx,
-            )
-        except NotFoundException as error:
-            raise MapRoomAccessError("MAP_NOT_FOUND") from error
-        except ForbiddenException as error:
-            raise MapRoomAccessError("MAP_ACCESS_DENIED") from error
+        async with self._room_service.membership_lock(group_id, credential.id):
+            try:
+                await self._map_service.ensure_realtime_access(
+                    map_id=map_id,
+                    group_id=group_id,
+                    credential=credential,
+                    ctx=ctx,
+                )
+            except NotFoundException as error:
+                raise MapRoomAccessError("MAP_NOT_FOUND") from error
+            except ForbiddenException as error:
+                raise MapRoomAccessError("MAP_ACCESS_DENIED") from error
 
-        await self._room_service.join(sid, Rooms.map(map_id))
+            await self._room_service.join(sid, Rooms.map(map_id))
 
     async def unsubscribe(self, sid: str, map_id: UUID) -> None:
         """Remove a socket from one map room without changing automatic rooms.

@@ -1,6 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -313,3 +314,21 @@ class MapDetailInfo(BaseModel):
     )
     zones: list[MapDetailZoneInfo] = Field(default_factory=list)
     docking_stations: list[MapDetailDockingStationInfo] = Field(default_factory=list)
+
+
+class MapRobotPosition(BaseModel):
+    x: float
+    y: float
+    updated_at: datetime
+    source: Literal["confirmed", "dock"] | None = None
+
+
+class MapPositionRobot(BaseModel):
+    id: UUID
+    name: str
+    position: MapRobotPosition | None
+    cleaning_task_active: bool = False
+
+
+class MapRobotPositions(BaseModel):
+    robots: list[MapPositionRobot]

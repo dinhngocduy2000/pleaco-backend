@@ -84,7 +84,9 @@ async def test_mqtt_ingress_requires_valid_identity_and_pending_command() -> Non
     payload = command()
     ack = RobotAcknowledgement(**payload.model_dump(), ack=True)
     robot_action_topic = SimpleNamespace(publish_ack=AsyncMock())
-    robot_command_store = SimpleNamespace(active=AsyncMock(return_value=None))
+    robot_command_store = SimpleNamespace(
+        active=AsyncMock(return_value=None), unconfirmed_movement=AsyncMock(return_value=None),
+    )
     robot_action_mqtt_gateway = RobotActionMqttGateway(robot_action_topic, robot_command_store)
     own_topic = f"pleco/robots/{payload.robot_id}/acks"
     await robot_action_mqtt_gateway.handle_message(own_topic, ack.model_dump_json().encode())

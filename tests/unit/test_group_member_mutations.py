@@ -1,21 +1,27 @@
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
+import socketio
 from pydantic import ValidationError
 
 from app.common.context import AppContext
-from app.common.enum.context_actions import EDIT_MEMBER, REMOVE_MEMBER
+from app.common.enum.context_actions import EDIT_MEMBER, LIST_MAPS, REMOVE_MEMBER
 from app.common.enum.group_member_status import GroupMemberInvitationStatus
 from app.common.enum.user_roles import GroupRole
 from app.common.enum.user_status import UserStatus
 from app.common.exceptions import ForbiddenException, NotFoundException
 from app.common.schemas.group import GroupMemberInfo, GroupMemberUpdate
+from app.common.schemas.realtime import SocketSession
 from app.common.schemas.user import Credential
+from app.external.realtime.rooms import RoomService, Rooms
 from app.models.group_members import GroupMembers
 from app.router.group import GroupRouter
 from app.services.group import GroupService
+from app.services.map_room import MapRoomAccessError, MapRoomService
 
 
 def _ctx(action: str, actor: UUID) -> AppContext:
@@ -285,6 +291,41 @@ async def test_delete_hard_deletes_accepted_and_rejected_memberships(
 
     assert (target_id, group_id) not in members_repo.members
     assert invitation_repo.consumed == []
+
+
+async def test_removal_evicts_a_map_join_authorized_just_before_deletion(monkeypatch) -> None:
+    service, group_id, requester_id, target_id, members_repo, _ = _service(GroupRole.ADMIN)
+    server = socketio.AsyncServer(async_mode="asgi")
+    monkeypatch.setattr(server, "_send_packet", AsyncMock())
+    room_service = service.room_service = RoomService(server)
+    sid = await server.manager.connect("target", "/")
+    await room_service.join(sid, Rooms.user(target_id))
+    await room_service.join(sid, Rooms.group(group_id))
+    session = SocketSession(credential=_credential(target_id).model_copy(update={"active_group_id": group_id}))
+    map_id = uuid4()
+    checking_membership = asyncio.Event()
+    continue_join = asyncio.Event()
+
+    async def ensure_realtime_access(**kwargs) -> None:
+        if (kwargs["credential"].id, kwargs["group_id"]) not in members_repo.members:
+            raise ForbiddenException(message="Membership was revoked")
+        checking_membership.set()
+        await continue_join.wait()
+
+    map_rooms = MapRoomService(SimpleNamespace(ensure_realtime_access=ensure_realtime_access), room_service)
+    subscribe = asyncio.create_task(map_rooms.subscribe(sid, map_id, session, _ctx(LIST_MAPS, target_id)))
+    await asyncio.wait_for(checking_membership.wait(), timeout=1)
+    remove = asyncio.create_task(service.delete_group_member(
+        group_id=group_id, member_id=target_id, credential=_credential(requester_id),
+        ctx=_ctx(REMOVE_MEMBER, requester_id),
+    ))
+    await asyncio.sleep(0)
+    assert not remove.done()
+    continue_join.set()
+    await asyncio.gather(subscribe, remove)
+    assert list(server.manager.get_participants("/", Rooms.map(map_id))) == []
+    with pytest.raises(MapRoomAccessError, match="MAP_ACCESS_DENIED"):
+        await map_rooms.subscribe(sid, map_id, session, _ctx(LIST_MAPS, target_id))
 
 
 @pytest.mark.asyncio

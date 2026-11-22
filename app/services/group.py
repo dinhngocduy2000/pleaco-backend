@@ -1,5 +1,6 @@
 import asyncio
 import secrets
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from uuid import UUID, uuid4
@@ -34,6 +35,7 @@ from app.external.queues.topics.add_group_member import (
     AddGroupMemberMessage,
     AddGroupMemberTopic,
 )
+from app.external.realtime.rooms import RoomService
 from app.models.group import Group
 from app.models.group_members import GroupMembers
 from app.models.user import User
@@ -53,6 +55,7 @@ class GroupService:
         repo: Registry,
         permission_service: PermissionService,
         add_group_member_topic: AddGroupMemberTopic,
+        room_service: RoomService | None = None,
     ) -> None:
         """Initialize group workflows and their infrastructure dependencies.
 
@@ -60,10 +63,12 @@ class GroupService:
             repo: Registry providing group, user, membership, and invitation storage.
             permission_service: Resolves group-scoped roles for protected actions.
             add_group_member_topic: Publishes invitation-email delivery requests.
+            room_service: Evicts local realtime connections when membership ends.
         """
         self.repo = repo
         self.permission_service = permission_service
         self.add_group_member_topic = add_group_member_topic
+        self.room_service = room_service
 
     async def _validate_group_exists(
         self, group_id: UUID, session: AsyncSession, ctx: AppContext
@@ -471,10 +476,17 @@ class GroupService:
             )
             if deleted_member is None:
                 raise NotFoundException(message="Group member not found")
+            if self.room_service is not None:
+                await self.room_service.disconnect_group_member(group_id, member_id)
 
-        await self.repo.transaction_wrapper(
-            _hard_delete_group_member, DbAccessContext(actor_id=credential.id, group_id=group_id)
-        )
+        async with (
+            self.room_service.membership_lock(group_id, member_id)
+            if self.room_service is not None else nullcontext()
+        ):
+            # Evict sockets before commit and keep joins serialized until commit.
+            await self.repo.transaction_wrapper(
+                _hard_delete_group_member, DbAccessContext(actor_id=credential.id, group_id=group_id)
+            )
         await self.repo.group_members_repo().delete_group_member_redis(
             group_id=group_id, member_id=member_id, ctx=ctx
         )

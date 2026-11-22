@@ -16,6 +16,7 @@ from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.common.schemas.map import (
     DockingStationRobotAssignmentDTO,
     MapCreateDTO,
+    MapRobotPositions,
     MapDetailInfo,
     MapInfo,
     MapLayoutSaveDTO,
@@ -100,6 +101,12 @@ class MapHandler:
             ctx=ctx,
         )
         return "Success"
+
+    @exception_handler
+    async def get_robot_positions(self, map_id: UUID, credential: Credential = Depends(AuthMiddleware.auth_middleware)) -> BaseResponse[MapRobotPositions]:
+        ctx = AppContext(trace_id=uuid4(), action=LIST_MAPS, actor=credential.id)
+        result = await self.service.get_robot_positions(map_id=map_id, group_id=credential.active_group_id, credential=credential, ctx=ctx)
+        return BaseResponse(data=result, message="Success", statusCode=200)
 
     @exception_handler
     async def get_map_detail(

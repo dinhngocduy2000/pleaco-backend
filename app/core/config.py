@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyHttpUrl, PositiveInt, NonNegativeInt, PositiveFloat
+from pydantic import AnyHttpUrl, Field, PositiveInt, NonNegativeInt, PositiveFloat
 
 
 class AppEnvTypes(Enum):
@@ -77,6 +77,11 @@ class Settings(BaseAppSettings):
     MQTT_PASSWORD: str = ""
     ROBOT_COMMAND_TIMEOUT_SECONDS: PositiveInt = 60
     ROBOT_COMMANDS_PAUSED: bool = False
+    # Enable admission after all robot-action consumers and reconcilers are upgraded.
+    CLEANING_TASKS_ENABLED: bool = False
+    CLEANING_STEP_INTERVAL_SECONDS: PositiveFloat = 10
+    CLEANING_STEP_DISTANCE_METERS: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    CLEANING_OCCUPANCY_RETRIES: PositiveInt = 5
     # Buffer non-traversable layout features by this many map meters.
     CLEANING_PATH_CLEARANCE_METERS: PositiveFloat = 1.0
 

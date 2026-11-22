@@ -1,9 +1,12 @@
 import math
+from uuid import uuid4
 
 import pytest
 from shapely.geometry import LineString, Point, box
 
 from app.services.cleaning_path_planner import PlanningError, plan_cleaning_path
+from app.common.context import AppContext
+from app.core.config import settings
 
 
 def flatten(sections):
@@ -46,9 +49,28 @@ def test_obstacle_segments_are_clear():
     assert all(not buffered.intersects(LineString([a, b])) for a, b in zip(route, route[1:]))
 
 
+def test_configured_step_distance_limits_route_movements(monkeypatch):
+    monkeypatch.setattr(settings, "CLEANING_STEP_DISTANCE_METERS", 0.4)
+    route = flatten(plan_cleaning_path(12, 12, (2, 2), [box(4, 3, 5, 4)]))
+
+    assert route[0] == route[-1] == (2, 2)
+    assert (6, 6) in route
+    assert all(math.dist(a, b) <= 0.400001 for a, b in zip(route, route[1:]))
+
+
 def test_unreachable_ring_is_rejected():
     with pytest.raises(PlanningError):
         plan_cleaning_path(12, 12, (2, 2), [box(0, 5, 12, 7)])
+
+
+def test_planning_failure_logs_request_context(caplog):
+    ctx = AppContext(trace_id=uuid4(), action="PREVIEW_CLEANING_PATH", actor=uuid4())
+    with pytest.raises(PlanningError):
+        plan_cleaning_path(12, 12, (2, 2), [box(0, 5, 12, 7)], ctx=ctx)
+    assert any(
+        str(ctx.trace_id) in record.message and "cannot reach" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize("start,dock", [

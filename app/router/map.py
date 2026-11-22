@@ -3,6 +3,7 @@ from fastapi import APIRouter, status
 from app.common.schemas.common import BaseResponse, PaginationBaseResponse
 from app.common.schemas.map import (
     DockingStationRobotAssignmentDTO,
+    MapRobotPositions,
     MapDetailInfo,
     MapInfo,
     MapListInfo,
@@ -14,6 +15,11 @@ class MapRouter:
     def __init__(self, handler: MapHandler) -> None:
         self.router = APIRouter(prefix="", tags=["Maps"])
         self.handler = handler
+        self.router.add_api_route(
+            path="/{map_id}/robot-positions", endpoint=self.handler.get_robot_positions,
+            methods=["GET"], response_model=BaseResponse[MapRobotPositions],
+            summary="Get confirmed robot positions on a map",
+        )
         self.router.add_api_route(
             path="/{map_id}/docking/{docking_id}/",
             endpoint=self.handler.assign_docking_station_robot,

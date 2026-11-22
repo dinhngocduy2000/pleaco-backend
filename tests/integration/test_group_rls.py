@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.common.exceptions import ForbiddenException
+from app.repository.cleaning_path import CleaningPathRepository
 from app.repository.registry import DbAccessContext, Registry
 
 
@@ -175,6 +176,24 @@ async def test_restricted_role_group_isolation_and_pool_reuse() -> None:
 
         assert await registry.transaction_wrapper(count_maps, DbAccessContext(u1, g1)) == 1
         assert await registry.transaction_wrapper(count_maps, DbAccessContext(None, None)) == 0
+
+        cleaning_paths = CleaningPathRepository()
+
+        async def check_dispatch_lock(session):
+            assert not await cleaning_paths.lock_for_dispatch(session, m2, g2)
+            assert await cleaning_paths.lock_for_dispatch(session, m1, g1)
+            with pytest.raises(DBAPIError) as blocked:
+                async with owner.begin() as writer:
+                    await writer.execute(text("SELECT id FROM maps WHERE id = :id FOR UPDATE NOWAIT"), {"id": m1})
+            assert blocked.value.orig.sqlstate == "55P03"
+
+        await registry.transaction_wrapper(check_dispatch_lock, DbAccessContext(None, g1))
+
+        async with owner.begin() as writer:
+            await writer.execute(text("SELECT id FROM maps WHERE id = :id FOR UPDATE"), {"id": m1})
+            with pytest.raises(DBAPIError) as blocked:
+                await registry.transaction_wrapper(check_dispatch_lock, DbAccessContext(None, g1))
+            assert blocked.value.orig.sqlstate == "55P03"
 
         # Group creation starts with actor only, then adopts the newly created
         # group context before writing its first membership.
