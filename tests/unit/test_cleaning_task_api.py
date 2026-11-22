@@ -162,16 +162,20 @@ async def test_planning_retains_the_source_record_for_the_start_reservation():
         map_id=map_id, robot_id=robot_id, group_id=group_id, actor_id=actor_id, ctx=None,
         for_execution=True,
     )
-    for unverified_position in (None, source_record):
-        position_records[robot_id] = unverified_position
-        with pytest.raises(BadRequestException, match="no verified position"):
-            await service.plan_for_robot(**execution_args)
+    position_records[robot_id] = None
+    fallback_path = await service.plan_for_robot(**execution_args)
+    assert fallback_path.start == (1, 1)
+    assert fallback_path.start_position is None
+    assert fallback_path.confirmed_peer_ids == [str(peer_id)]
 
     old_position_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    position_records[robot_id] = {**source_record, "updated_at": old_position_time}
+    assert (await service.plan_for_robot(**execution_args)).start == path.start
+    position_records[robot_id] = {**source_record, "robot_id": str(peer_id)}
+    with pytest.raises(BadRequestException, match="no matching position"):
+        await service.plan_for_robot(**execution_args)
     position_records[robot_id] = {**source_record, "verified": True, "updated_at": old_position_time}
     position_records[peer_id] = {**peer_record, "verified": True, "updated_at": old_position_time}
-    with pytest.raises(BadRequestException, match="no verified position"):
-        await service.plan_for_robot(**execution_args)
     position_records[docked_peer_id] = {
         **source_record, "verified": True, "updated_at": old_position_time,
         "robot_id": str(docked_peer_id), "x": 9.5, "y": 0.5,

@@ -266,8 +266,9 @@ async def test_four_step_loop_real_broker_redis_and_simulator(harness: SimpleNam
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_saved_position", [True, False])
 async def test_cleaning_task_http_roundtrip(
-    harness: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    harness: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_saved_position: bool,
 ) -> None:
     interval = 0.15
     monkeypatch.setattr(settings, "CLEANING_TASKS_ENABLED", True)
@@ -314,11 +315,15 @@ async def test_cleaning_task_http_roundtrip(
         "x": 0.5, "y": 0.5, "verified": True, "command_id": str(uuid4()),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    await harness.raw_redis.set(
-        harness.robot_command_store.position_key(harness.robot_id),
-        harness.robot_command_store.encode(verified_dock),
-        ex=harness.robot_command_store.ttl,
-    )
+    # Exercise both a verified dock position and the fallback from an empty Redis key.
+    if has_saved_position:
+        await harness.raw_redis.set(
+            harness.robot_command_store.position_key(harness.robot_id),
+            harness.robot_command_store.encode(verified_dock),
+            ex=harness.robot_command_store.ttl,
+        )
+    else:
+        assert await harness.robot_command_store.position(harness.robot_id) is None
     path_sections = await path_service.preview(
         map_id=harness.map_id, robot_id=harness.robot_id, group_id=harness.group_id,
         credential=credential, ctx=harness.auth["ctx"],
@@ -390,6 +395,7 @@ async def test_cleaning_task_http_roundtrip(
             position = await harness.robot_command_store.position(harness.robot_id)
             assert (position["x"], position["y"]) == point
             assert position["command_id"] == command["command_id"]
+            assert position.get("verified", False) is has_saved_position
 
         response = await client.get(task_url)
         assert response.status_code == 200, response.text

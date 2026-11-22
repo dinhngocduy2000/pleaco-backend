@@ -1,6 +1,7 @@
 """Robot action lifecycle, authorization, and confirmed-position reconciliation."""
 
 import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,7 @@ from math import isfinite
 from typing import TypeGuard
 from uuid import UUID, uuid4
 
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, shape
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.context import AppContext
@@ -124,20 +125,18 @@ class RobotActionService:
         logger.debug(msg=f"Reserving cleaning task for robot {robot_id} with {len(moves)} moves", context=ctx)
         # Planning may take time, so check readiness again before reserving the robot.
         await self.ensure_cleaning_task_can_start(robot_id=robot_id, map_id=map_id, group_id=group_id, actor_id=actor_id, ctx=ctx)
-        if start_position is None or start_position.get("verified") is not True:
-            raise BadRequestException(message="Robot has no verified starting position", status_code=409)
-        position_matches_context = (
-            start_position.get("robot_id") == str(robot_id)
-            and start_position.get("group_id") == str(group_id)
-            and start_position.get("map_id") == str(map_id)
-        )
-        if not position_matches_context:
-            raise BadRequestException(message="Robot has no verified starting position", status_code=409)
+        # A task reservation needs a first movement to queue.
         if not moves:
             logger.warning(msg=f"Cleaning route has no moves for robot {robot_id}", context=ctx)
             raise BadRequestException(message="Cleaning route has no moves")
-        if any(moves[0]["origin"][axis] != start_position[axis] for axis in ("x", "y")):
-            raise BadRequestException(message="Cleaning route start does not match the verified position", status_code=409)
+        # A saved position must match both the selected robot and the route's first waypoint.
+        if start_position is not None and (
+            start_position.get("robot_id") != str(robot_id)
+            or start_position.get("group_id") != str(group_id)
+            or start_position.get("map_id") != str(map_id)
+            or any(moves[0]["origin"][axis] != start_position.get(axis) for axis in ("x", "y"))
+        ):
+            raise BadRequestException(message="Cleaning route start does not match the saved position", status_code=409)
         now = self.clock()
         task: CleaningTaskRecord = {
             "task_id": str(uuid4()), "robot_id": str(robot_id), "map_id": str(map_id),
@@ -151,7 +150,11 @@ class RobotActionService:
             task["trace_id"] = str(ctx.trace_id)
             if ctx.actor:
                 task["actor_id"] = str(ctx.actor)
-        command = self._build_cleaning_command(task, moves[0], now, origin_verified=True)
+        command = self._build_cleaning_command(
+            task, moves[0], now,
+            origin_verified=start_position is not None and start_position.get("verified") is True,
+        )
+        # Reserve only while the planning snapshot still matches and the robot has no pending movement.
         if not await self.robot_command_store.reserve_task(command, start_position, task, moves):
             logger.warning(msg=f"Cleaning task reservation failed for robot {robot_id}", context=ctx)
             raise BadRequestException(message="Robot is busy, its position changed, or its movement is unconfirmed", status_code=409)
@@ -880,6 +883,14 @@ class RobotActionService:
     def _shares_map(command: RobotCommandRecord, record: dict) -> bool:
         return record.get("group_id") == command["group_id"] and record.get("map_id") == command["map_id"]
 
+    @staticmethod
+    def _dock_origin(layout: dict, robot_id: str) -> RobotCoordinates | None:
+        for assigned, geometry in layout.get("docks", []):
+            if str(assigned) == robot_id:
+                center = shape(json.loads(geometry)).centroid
+                return {"x": center.x, "y": center.y}
+        return None
+
     async def _check_movement_occupancy(
         self, command: RobotCommandRecord, layout: dict, *, confirmed_peers: set[str] | None = None,
     ) -> tuple[bool, dict[str, str | None]]:
@@ -896,17 +907,27 @@ class RobotActionService:
             expected_peer_values.update(peer.guard)
             peer_command = peer.command
             unconfirmed = peer.unconfirmed_movement
-            if peer.unconfirmed_movement_invalid or (
-                unconfirmed is not None and (
-                    unconfirmed.get("origin_verified") is not True
-                    or not self._shares_map(command, unconfirmed)
-                    or unconfirmed.get("robot_id") != robot_id
-                    or not self._valid_map_point(unconfirmed.get("origin"), layout)
-                    or not self._valid_map_point(unconfirmed.get("target"), layout)
-                    or segment.distance(self._movement_segment(unconfirmed)) <= clearance
-                )
-            ):
+            # An unreadable reservation leaves the peer's occupancy unknown.
+            if peer.unconfirmed_movement_invalid:
                 return True, expected_peer_values
+            # A saved reservation may still be occupied until execution is confirmed.
+            if unconfirmed is not None:
+                has_verified_origin = unconfirmed.get("origin_verified") is True
+                matches_peer = unconfirmed.get("robot_id") == robot_id and self._shares_map(command, unconfirmed)
+                # The reservation must have a verified origin and belong to this peer on this map.
+                if not has_verified_origin or not matches_peer:
+                    return True, expected_peer_values
+
+                valid_origin = self._valid_map_point(unconfirmed.get("origin"), layout)
+                valid_target = self._valid_map_point(unconfirmed.get("target"), layout)
+                # Both endpoints must be valid before building the reserved segment.
+                if not valid_origin or not valid_target:
+                    return True, expected_peer_values
+
+                reserved_segment = self._movement_segment(unconfirmed)
+                # Block moves that enter the reserved segment's clearance zone.
+                if segment.distance(reserved_segment) <= clearance:
+                    return True, expected_peer_values
             if confirmed_peers is None and not peer.cleaning_task_active:
                 continue
             if peer.position_invalid or peer.command_invalid:
@@ -921,10 +942,10 @@ class RobotActionService:
                     return True, expected_peer_values
             position = peer.position
             point: RobotCoordinates | None
+            # Prefer a saved position and track peers whose positions were observed during this task.
             if position is not None:
                 if (
                     not self._shares_map(command, position) or position.get("robot_id") != robot_id
-                    or (confirmed_peers is not None and position.get("verified") is not True)
                 ):
                     return True, expected_peer_values
                 if confirmed_peers is not None:
@@ -932,6 +953,9 @@ class RobotActionService:
                 point = position
             elif confirmed_peers is None and peer_command is not None and self._shares_map(command, peer_command):
                 point = peer_command.get("origin")
+            # The dock is a fallback only for a peer with no observed position or outstanding movement.
+            elif confirmed_peers is not None and robot_id not in confirmed_peers and unconfirmed is None:
+                point = self._dock_origin(layout, robot_id)
             else:
                 return True, expected_peer_values
             if not self._valid_map_point(point, layout) or segment.distance(Point(point["x"], point["y"])) <= clearance:
@@ -943,8 +967,9 @@ class RobotActionService:
         awaiting_ack = command["status"] == CommandStatus.AWAITING_ACK.value
         if awaiting_ack and await self.robot_command_store.dispatched(command):
             return
-        if command.get("origin_verified") is not True:
-            await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning movement has no verified origin")
+        # Commands from older workers may lack the origin flag needed to authorize a dock fallback.
+        if "origin_verified" not in command:
+            await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning movement has no saved origin provenance")
             return
         if settings.ROBOT_COMMANDS_PAUSED:
             if not awaiting_ack:
@@ -996,19 +1021,29 @@ class RobotActionService:
                 await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning route invalidated by map changes")
             return
         position = await self.robot_command_store.position(command["robot_id"])
-        if (
-            position is None or position.get("verified") is not True
-            or position.get("robot_id") != command["robot_id"]
-            or not self._shares_map(command, position)
-            or any(position.get(axis) != command["origin"][axis] for axis in ("x", "y"))
-        ):
-            await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning movement no longer has a verified origin")
+        origin = None
+        # Reuse a saved position only when its scope and verification match what the command expects.
+        if position is not None:
+            if (
+                position.get("robot_id") == command["robot_id"]
+                and self._shares_map(command, position)
+                and (not command["origin_verified"] or position.get("verified") is True)
+            ):
+                origin = position
+        # Only the first move can use the assigned dock when the saved position is absent.
+        elif task["completed_moves"] == 0 and not command["origin_verified"]:
+            origin = self._dock_origin(layout, command["robot_id"])
+        # Stop if the current origin differs from the origin used to plan this move.
+        if origin is None or any(origin.get(axis) != command["origin"][axis] for axis in ("x", "y")):
+            await self._finish_command(command, CommandStatus.CANCELLED, "Cleaning movement no longer matches its planned origin")
             return
         confirmed_peers = set(task.get("confirmed_peer_ids", []))
         blocked, expected_peer_values = await self._check_movement_occupancy(
             command, layout, confirmed_peers=confirmed_peers,
         )
-        expected_peer_values[RobotCommandStore.position_key(command["robot_id"])] = RobotCommandStore.encode(position)
+        expected_peer_values[RobotCommandStore.position_key(command["robot_id"])] = (
+            RobotCommandStore.encode(position) if position is not None else None
+        )
         is_occupancy_retry = task["status"] == CleaningTaskStatus.WAITING_OCCUPANCY.value
         occupancy_retries_used = task["occupancy_retries_used"] + int(is_occupancy_retry)
         if blocked:

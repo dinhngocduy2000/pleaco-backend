@@ -15,6 +15,7 @@ from app.common.context import AppContext
 from app.common.enum.direction import Direction
 from app.common.middleware.logger import Logger
 from app.common.utils.robot_movement import RectangleBoundary, select_movement
+from app.core.config import settings
 
 logger = Logger()
 
@@ -74,11 +75,13 @@ def _points_are_close(a: Point2D, b: Point2D) -> bool:
 
 
 def _steps(a: Point2D, b: Point2D) -> list[Point2D]:
-    """Split one segment into points no farther than one meter apart."""
+    """Split a segment into steps within the configured distance."""
     length = math.dist(a, b)
-    count = max(1, math.ceil(length - EPSILON))
-    if count > MAX_POINTS:
+    steps_required = max(0.0, length - EPSILON) / settings.CLEANING_STEP_DISTANCE_METERS
+    # Reject oversized segments before rounding the count or allocating waypoints.
+    if steps_required > MAX_POINTS:
         raise PlanningError("Cleaning path exceeds maximum response size")
+    count = max(1, math.ceil(steps_required))
     return [
         (a[0] + (b[0] - a[0]) * i / count, a[1] + (b[1] - a[1]) * i / count)
         for i in range(1, count + 1)
@@ -124,7 +127,7 @@ def _cardinal_steps(
     width: float,
     height: float,
 ) -> list[Point2D]:
-    """Validate the prescribed cardinal movement at each meter step."""
+    """Validate the prescribed cardinal movement at each step."""
     if abs(target[0] - origin[0]) > EPSILON:
         direction = Direction.WEST if target[0] < origin[0] else Direction.EAST
     else:
@@ -258,7 +261,7 @@ class _Graph:
         goal: tuple[int, int],
         previous: dict[tuple[int, int], tuple[int, int]],
     ) -> list[Point2D]:
-        """Expand the chosen grid edges into points at most one meter apart."""
+        """Expand the chosen grid edges into steps within the configured distance."""
         nodes = [goal]
         while nodes[-1] != source:
             nodes.append(previous[nodes[-1]])
@@ -266,6 +269,9 @@ class _Graph:
         result: list[Point2D] = []
         for u, v in zip(nodes, nodes[1:]):
             result.extend(_steps(self._point(u), self._point(v)))
+            # Individually valid edges can still exceed the budget when combined.
+            if len(result) > MAX_POINTS:
+                raise PlanningError("Cleaning path exceeds maximum response size")
         return result
 
     def safe(self, a: Point2D, b: Point2D) -> bool:
@@ -318,7 +324,7 @@ class _Graph:
                 msg="Cleaning path cannot reach a required waypoint", context=self.ctx
             )
             raise PlanningError("Cannot reach required ring, center, or dock")
-        # 4. Reconstruct the found route and split its edges into meter steps.
+        # 4. Reconstruct the route and split its edges into movement steps.
         return self._reconstruct(source, goal, previous)
 
 

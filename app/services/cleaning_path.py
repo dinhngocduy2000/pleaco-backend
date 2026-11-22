@@ -310,13 +310,10 @@ class CleaningPathService:
         *,
         for_execution: bool,
     ) -> Point2D:
-        """Use verified evidence for execution and allow an absent preview point at its dock."""
-        if for_execution and (
-            record is None or record.get("verified") is not True or record.get("robot_id") != str(robot_id)
-        ):
-            logger.warning(msg=f"Map robot {robot_id} has no verified position for execution", context=ctx)
-            raise BadRequestException(message="A map robot has no verified position", status_code=409)
+        """Use the saved position or the assigned dock when no position is saved."""
+        # The dock supplies a planning coordinate only when Redis has no position.
         if record is None:
+            # A robot without either coordinate cannot be placed on the route or its exclusion area.
             if dock is None:
                 logger.warning(
                     msg=f"Map robot {robot_id} has no confirmed position or assigned dock",
@@ -332,15 +329,20 @@ class CleaningPathService:
             )
             return float(center.x), float(center.y)
 
-        # A record from another group or map is invalid, even if its timestamp is fresh.
-        if record.get("group_id") != str(group_id) or record.get("map_id") != str(
-            map_id
+        # Validate group and map scope, and confirm robot identity before execution.
+        if (
+            (for_execution and record.get("robot_id") != str(robot_id))
+            or record.get("group_id") != str(group_id)
+            or record.get("map_id") != str(map_id)
         ):
             logger.warning(
                 msg=f"Map robot {robot_id} has no matching confirmed position",
                 context=ctx,
             )
-            raise BadRequestException(message="A map robot has no confirmed position")
+            raise BadRequestException(
+                message="A map robot has no matching position" if for_execution else "A map robot has no confirmed position",
+                status_code=409 if for_execution else 400,
+            )
         try:
             updated = datetime.fromisoformat(
                 record["updated_at"].replace("Z", "+00:00")
@@ -349,12 +351,13 @@ class CleaningPathService:
             fresh = (
                 updated.tzinfo is not None
                 and updated <= datetime.now(timezone.utc)
-                and (record.get("verified") is True or cutoff <= updated)
+                and (for_execution or record.get("verified") is True or cutoff <= updated)
                 and isfinite(x)
                 and isfinite(y)
             )
         except (KeyError, TypeError, ValueError):
             fresh = False
+        # Reject malformed coordinates or timestamps before they reach the geometry planner.
         if not fresh:
             logger.warning(
                 msg=f"Map robot {robot_id} confirmed position is invalid or stale", context=ctx

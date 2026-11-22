@@ -181,7 +181,8 @@ class InMemoryCleaningCommandStore(MemoryStore):
 
 
 @pytest.mark.parametrize("clear_on_last_retry", [True, False])
-async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on_last_retry, monkeypatch, caplog) -> None:
+@pytest.mark.parametrize("has_saved_position", [True, False])
+async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on_last_retry, has_saved_position, monkeypatch, caplog) -> None:
     monkeypatch.setattr(settings, "CLEANING_TASKS_ENABLED", True)
     monkeypatch.setattr(settings, "CLEANING_PATH_CLEARANCE_METERS", 0.1)
     s = setup()
@@ -193,7 +194,10 @@ async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on
         "width": Decimal("10"), "height": Decimal("10"), "boundary": "DIMENSIONS",
         "robots": [SimpleNamespace(id=current_id, group_id=group_id, map_id=map_id)
                    for current_id in (robot_id, peer_id)],
-        "zones": [], "docks": [],
+        "zones": [], "docks": [
+            (robot_id, '{"type":"Polygon","coordinates":[[[3,3],[5,3],[5,5],[3,5],[3,3]]]}'),
+            (peer_id, '{"type":"Polygon","coordinates":[[[8,8],[10,8],[10,10],[8,10],[8,8]]]}'),
+        ],
     }
     service.cleaning_path_repository = SimpleNamespace(
         lock_for_dispatch=AsyncMock(return_value=True), layout=AsyncMock(return_value=layout),
@@ -217,13 +221,16 @@ async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on
         )
 
     advance(0)
-    set_peer(9, 9)
     start = {"x": 4.0, "y": 4.0}
     turn = {"x": 5.0, "y": 4.0}
-    start_position = store.positions[str(robot_id)] = {
-        **start, "robot_id": str(robot_id), "group_id": str(group_id), "map_id": str(map_id),
-        "verified": True, "command_id": str(uuid4()), "updated_at": s.now[0].isoformat(),
-    }
+    start_position = None
+    # With no saved position, both robots use their assigned docks for the first move.
+    if has_saved_position:
+        set_peer(9, 9)
+        start_position = store.positions[str(robot_id)] = {
+            **start, "robot_id": str(robot_id), "group_id": str(group_id), "map_id": str(map_id),
+            "verified": True, "command_id": str(uuid4()), "updated_at": s.now[0].isoformat(),
+        }
     task = await service.start_cleaning_task(
         robot_id=robot_id, map_id=map_id, group_id=group_id, actor_id=s.kwargs["credential"].id,
         layout_signature=layout_signature(layout), start_position=start_position,
@@ -236,6 +243,7 @@ async def test_cleaning_waits_and_retries_without_sending_blocked_moves(clear_on
     first = to_robot_command(await store.active(robot_id))
     await service.process_command(first)
     await service.process_message(ack(first))
+    assert (await store.position(robot_id)).get("verified", False) is has_saved_position
     assert store.tasks[str(task.task_id)]["trace_id"] == str(s.kwargs["ctx"].trace_id)
     assert any(
         str(s.kwargs["ctx"].trace_id) in record.message and "WAITING_INTERVAL" in record.message
